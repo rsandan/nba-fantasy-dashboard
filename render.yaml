@@ -1,0 +1,14 @@
+services:
+  - name: nba-fantasy-dashboard
+    type: web
+    runtime: python
+    repo: https://github.com/rsandan/nba-fantasy-dashboard
+    branch: main
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py
+    envVars:
+      - key: KEYPAIR_JSON
+        sync: false
+      - key: NGROK_AUTH_TOKEN
+        sync: false
