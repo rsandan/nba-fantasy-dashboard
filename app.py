@@ -31,9 +31,13 @@ NGROK_AUTH_TOKEN = os.getenv("NGROK_AUTH_TOKEN")
 if not NGROK_AUTH_TOKEN:
     raise ValueError("NGROK_AUTH_TOKEN environment variable is missing!")
 
-# Use OAuth2 authentication
-sc = OAuth2(None, None, from_dict=keypair)
-
+# Use OAuth2 authentication without interactive input
+try:
+    sc = OAuth2(None, None, from_dict=keypair)
+    if not sc.token_is_valid():  # If token expired, refresh automatically
+        sc.refresh_access_token()
+except Exception as e:
+    raise RuntimeError(f"OAuth authentication failed: {str(e)}")
 
 subprocess.run(["ngrok", "authtoken", NGROK_AUTH_TOKEN], check=True)
 
