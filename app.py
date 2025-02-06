@@ -22,9 +22,11 @@ pd.set_option('display.max_columns', None)
 
 # Load secrets from Render environment variables
 keypair_data = os.getenv("KEYPAIR_JSON")
+print(keypair_data)
 if keypair_data:
     keypair = json.loads(keypair_data)
     print("keypair read in: SUCCESS")
+    print(keypair)
 else:
     raise ValueError("KEYPAIR_JSON environment variable is missing!")
 
@@ -36,7 +38,7 @@ else:
 
 # Use OAuth2 authentication without interactive input
 try:
-    sc = OAuth2(None, None, from_dict=keypair)
+    sc = OAuth2(None, None, from_dict=keypair_data)
     print(sc)
     if not sc.token_is_valid():  # If token expired, refresh automatically
         sc.refresh_access_token()
