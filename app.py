@@ -15,14 +15,9 @@ from collections import Counter
 # import api stuff
 from yahoo_oauth import OAuth2
 import yahoo_fantasy_api as yfa
-from pyngrok import ngrok, conf
 
 # Set the maximum number of columns to display to None
 pd.set_option('display.max_columns', None)
-
-NGROK_AUTH_TOKEN = os.getenv("NGROK_AUTH_TOKEN")
-if not NGROK_AUTH_TOKEN:
-    raise ValueError("NGROK_AUTH_TOKEN environment variable is missing!")
 
 keypair_file_path = "/etc/secrets/keypair.json"
 
@@ -520,19 +515,3 @@ st.markdown("""
     <div class='footer'>© 2025 Ryan Sandan</div>
 """, unsafe_allow_html=True)
 ''')
-
-
-# ✅ Manually configure NGROK authentication
-ngrok.set_auth_token(NGROK_AUTH_TOKEN)  # Ensure auth token is set
-os.system(f"ngrok config add-authtoken {NGROK_AUTH_TOKEN}")  # 🔥 Explicitly configure NGROK auth
-print("✅ NGROK auth token configured successfully!")
-
-# ✅ Get the correct Streamlit port dynamically
-PORT = os.getenv("PORT", 8501)  # Use Render's PORT or default to 8501
-
-# ✅ Start NGROK tunnel
-public_url = ngrok.connect(PORT).public_url
-print(f"🚀 Streamlit app is live at: {public_url}")
-
-# ✅ Run Streamlit with the correct port
-os.system(f"streamlit run app.py --server.port {PORT} --server.address 0.0.0.0")
