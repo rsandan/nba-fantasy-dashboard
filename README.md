@@ -28,7 +28,7 @@ Hope you enjoy!
 Below is a ChatGPT response to my prompt: So all in all what did I learn after all my debugging sessions (I will include details on what I learned about Yahoo's Fantasy API in the near future)
 
 # **Yahoo! NBA Fantasy Dashboard Deployment Guide**
----This is a **Yahoo NBA Fantasy API dashboard**, hosted on **Render.com**. This guide covers **key lessons learned** during development and deployment.
+### This is a **Yahoo NBA Fantasy API dashboard**, hosted on **Render.com**. This guide covers **key lessons learned** during development and deployment. ###
 
 ## **1️⃣ OAuth2 Authentication with Yahoo Fantasy API**
 
