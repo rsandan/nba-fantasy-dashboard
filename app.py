@@ -20,22 +20,22 @@ from pyngrok import ngrok, conf
 # Set the maximum number of columns to display to None
 pd.set_option('display.max_columns', None)
 
-# Load secrets from Render environment variables
-keypair_data = os.getenv("KEYPAIR_JSON")
-if keypair_data:
-    keypair = json.loads(keypair_data)
-else:
-    raise ValueError("KEYPAIR_JSON environment variable is missing!")
-
 NGROK_AUTH_TOKEN = os.getenv("NGROK_AUTH_TOKEN")
 if not NGROK_AUTH_TOKEN:
     raise ValueError("NGROK_AUTH_TOKEN environment variable is missing!")
 
+# Load keypair.json from the secret file
+keypair_file_path = "/etc/secrets/keypair.json"
+
+if os.path.exists(keypair_file_path):
+    print("This file exists!")
+else:
+    raise FileNotFoundError(f"Secret file {keypair_file_path} not found. Ensure it's correctly set in Render.")
+
+
 # Use OAuth2 authentication without interactive input
 try:
-    sc = OAuth2(None, None, from_dict=keypair)
-    if not sc.token_is_valid():  # If token expired, refresh automatically
-        sc.refresh_access_token()
+    sc = OAuth2(None, None, from_file=keypair_file_path)
 except Exception as e:
     raise RuntimeError(f"OAuth authentication failed: {str(e)}")
 
