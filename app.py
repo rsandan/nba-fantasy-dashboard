@@ -20,13 +20,16 @@ from pyngrok import ngrok, conf
 # Set the maximum number of columns to display to None
 pd.set_option('display.max_columns', None)
 
-# Load secrets from environment variables
-NGROK_AUTH_TOKEN = os.getenv("NGROK_AUTH_TOKEN")
+# Load secrets from Render environment variables
 keypair_data = os.getenv("KEYPAIR_JSON")
 if keypair_data:
     keypair = json.loads(keypair_data)
 else:
-    raise ValueError("Missing KEYPAIR_JSON environment variable")
+    raise ValueError("KEYPAIR_JSON environment variable is missing!")
+
+NGROK_AUTH_TOKEN = os.getenv("NGROK_AUTH_TOKEN")
+if not NGROK_AUTH_TOKEN:
+    raise ValueError("NGROK_AUTH_TOKEN environment variable is missing!")
 
 # Use OAuth2 authentication
 sc = OAuth2(None, None, from_dict=keypair)
