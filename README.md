@@ -1,13 +1,13 @@
-In my first run around with playing fantasy hoops, I wanted to explore the capabilities of Yahoo's Fantasy API and see what insightful extractions I can make out of it -- like analyzing the transaction data and seeing if there are any patterns of players added/dropped at certain times, etc. This analysis initially started in a google colab notebook, where I used `ngrok` as a local testing site to design the dashboard. 
+In my first run around with playing fantasy hoops, I wanted to explore the capabilities of Yahoo's Fantasy API and see what insightful extractions I can make out of it -- like analyzing matchup data (head-to-head), transaction data, seeing if there are any patterns of players added/dropped at certain times, etc. This analysis initially started in a `google colab` notebook, where I used `ngrok` as a local testing site to design the dashboard. 
 
-However, each time I deployed the ngrok website, it'd be a new url. So now that I landed on something acceptable, I wanted to host it online so I could share it with my friends. Hosting this project on render.com made me learn a lot of things, with a lot of *debugging sessions*. Google/StackOverflow/ChatGPT were my main resources in finding solutions. I will link below useful resources I found during this project.
+However, each time I deployed the ngrok website, it'd be a new url. So now that I landed on something acceptable, I wanted to host it online so I could share it with my friends. Hosting this project on `render.com` made me learn a lot of things, with a lot of *debugging sessions*. `Google/StackOverflow/ChatGPT` were my main resources in finding solutions. I will link below useful resources I found during this project.
 
 I tackled through a lot of things:
-- Sifting and sorting through Yahoo's Fantasy API for NBA data. A lot of nested dictionaries to weed through to get matchup data in our league. 
-- Creating a multi-player comparison tool to compare 2-5 NBA players at a time to see which to pick up or drop. Able to compare 7/14/30/Season stats (Average/Total)
-- OAuth 2.0 (specifically OAuth initialization without requiring user input/login, I had PTSD reading the same "Enter Verifier:" / "OAuthentication Timed Out" errors for hours)
-- Writing Environment variables / secret files for mainly for yahoo's access tokens and refresh tokens
-- Successful Deployment (via Render.com)
+- Sifting and sorting through `Yahoo's Fantasy API` for NBA data. A lot of nested dictionaries to weed through to get matchup data in our league. 
+- Creating a `multi-player comparison tool` to compare 2-5 NBA players at a time to see which to pick up or drop. Able to compare 7/14/30/Season stats (Average/Total)
+- `OAuth 2.0` (specifically OAuth initialization without requiring user input/login, I had PTSD reading the same "Enter Verifier:" / "OAuthentication Timed Out" errors for hours)
+- Writing `Environment variables` / secret files for mainly for yahoo's access tokens and refresh tokens
+- Successful `Deployment` (via Render.com)
   
 Hope you enjoy!
 
