@@ -28,14 +28,22 @@ if not NGROK_AUTH_TOKEN:
 keypair_file_path = "/etc/secrets/keypair.json"
 
 if os.path.exists(keypair_file_path):
-    print("This file exists!")
+    with open(keypair_file_path, "r") as f:
+        keypair = json.load(f)
 else:
     raise FileNotFoundError(f"Secret file {keypair_file_path} not found. Ensure it's correctly set in Render.")
 
-
-# Use OAuth2 authentication without interactive input
+# Use OAuth2 authentication with auto-refresh
 try:
-    sc = OAuth2(None, None, from_file=keypair_file_path)
+    sc = OAuth2(None, None, from_dict=keypair)
+    if not sc.token_is_valid():
+        print("🔄 Refreshing expired token...")
+        sc.refresh_access_token()
+
+        # Save the updated keypair.json to maintain the new token
+        with open(keypair_file_path, "w") as f:
+            json.dump(sc.token_dict, f)
+        print("✅ Token refreshed and saved!")
 except Exception as e:
     raise RuntimeError(f"OAuth authentication failed: {str(e)}")
 
