@@ -24,25 +24,31 @@ NGROK_AUTH_TOKEN = os.getenv("NGROK_AUTH_TOKEN")
 if not NGROK_AUTH_TOKEN:
     raise ValueError("NGROK_AUTH_TOKEN environment variable is missing!")
 
-# Load keypair.json from the secret file
 keypair_file_path = "/etc/secrets/keypair.json"
 
+# Load keypair.json
 if os.path.exists(keypair_file_path):
     with open(keypair_file_path, "r") as f:
         keypair = json.load(f)
 else:
-    raise FileNotFoundError(f"Secret file {keypair_file_path} not found. Ensure it's correctly set in Render.")
+    raise FileNotFoundError(f"Secret file {keypair_file_path} not found.")
 
-# Use OAuth2 authentication with auto-refresh
+# 🔍 Debugging: Print the keys being loaded
+print("DEBUG: Loaded keypair.json keys ->", keypair.keys())
+print("DEBUG: Consumer Key ->", keypair.get("consumer_key"))
+print("DEBUG: Consumer Secret ->", keypair.get("consumer_secret"))
+
+# Authenticate using Yahoo OAuth
 try:
     sc = OAuth2(None, None, from_dict=keypair)
+
     if not sc.token_is_valid():
         print("🔄 Refreshing expired token...")
         sc.refresh_access_token()
 
-        # Save the updated keypair.json to maintain the new token
+        # Save the updated token
         with open(keypair_file_path, "w") as f:
-            json.dump(sc.token_dict, f)
+            json.dump(sc.credentials, f)
         print("✅ Token refreshed and saved!")
 except Exception as e:
     raise RuntimeError(f"OAuth authentication failed: {str(e)}")
