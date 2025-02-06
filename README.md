@@ -1,5 +1,13 @@
 # 🏀 NBA Fantasy Dashboard
 
+⚠️ Free Tier Instance Downtime
+
+This project is hosted on Render.com, using their free tier instance. One important limitation of the free tier is automatic spin-down due to inactivity.
+- If there are no active requests for a period of time, the instance will stop running.
+- When a new request is made after inactivity, Render will restart the instance, which can cause a delay of ~50+ seconds before the app is available again.
+- So if no one has entered the site in a while, the first person who does will experience a blank webpage basically... but give it a min or two and refresh the page and you'll see it 👍🏽
+
+    
 In my first run around with playing fantasy hoops, I wanted to explore the capabilities of Yahoo's Fantasy API and see what insightful extractions I can make out of it -- like analyzing matchup data (head-to-head), transaction data, seeing if there are any patterns of players added/dropped at certain times, etc. This analysis initially started in a `google colab` notebook, where I used `ngrok` as a local testing site to design the dashboard. However, each time I deployed the ngrok website, it'd be a new url. So now that I landed on something acceptable, I wanted to host it online so I could share it with my friends. Hosting this project on `render.com` made me learn a lot of things, with a lot of *debugging sessions*. `Google/StackOverflow/ChatGPT` were my main resources in finding solutions. 
 
 🚀 What I learned:
