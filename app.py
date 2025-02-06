@@ -33,18 +33,24 @@ if os.path.exists(keypair_file_path):
 else:
     raise FileNotFoundError(f"Secret file {keypair_file_path} not found.")
 
-# 🔍 Debugging: Check if the correct keys are being loaded
+# 🔍 Debugging: Print loaded values to confirm they exist
 print("DEBUG: Loaded keypair.json keys ->", keypair.keys())
 print("DEBUG: Consumer Key ->", keypair.get("consumer_key"))
 print("DEBUG: Consumer Secret ->", keypair.get("consumer_secret"))
+print("DEBUG: Access Token ->", keypair.get("access_token"))
+print("DEBUG: Refresh Token ->", keypair.get("refresh_token"))
+print("DEBUG: Token Time ->", keypair.get("token_time"))
+print("DEBUG: Token Type ->", keypair.get("token_type"))
 
-# ✅ Manually initialize OAuth2 with correct tokens
+# ✅ Manually initialize OAuth2 with token_time & token_type to prevent verifier request
 try:
     sc = OAuth2(
         keypair["consumer_key"], 
         keypair["consumer_secret"], 
         access_token=keypair["access_token"], 
-        refresh_token=keypair["refresh_token"]
+        refresh_token=keypair["refresh_token"],
+        token_time=keypair["token_time"],  # ✅ Explicitly pass token_time
+        token_type=keypair["token_type"]   # ✅ Explicitly pass token_type
     )
 
     # 🔄 Refresh token if expired
@@ -58,6 +64,8 @@ try:
         print("✅ Token refreshed and saved!")
 except Exception as e:
     raise RuntimeError(f"OAuth authentication failed: {str(e)}")
+
+
 subprocess.run(["ngrok", "authtoken", NGROK_AUTH_TOKEN], check=True)
 
 team_ids = {'454.l.74601.t.1': "Sam's Swag Team",
