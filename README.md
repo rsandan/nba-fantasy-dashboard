@@ -1,6 +1,6 @@
 # **Yahoo! NBA Fantasy Dashboard Deployment Guide**
 
-In my first run around with playing fantasy hoops, I wanted to explore the capabilities of Yahoo's Fantasy API and see what insightful extractions I can make out of it -- like analyzing the transaction data and seeing if there are any patterns of players added/dropped at certain times, etc. This analysis initially started in a google colab notebook and used ngrok as a local testing website to design the dashboard. Now that I landed on something acceptable, I wanted to host it online so I could share it with my friends. Hosting this project on render.com made me learn a lot of things, with a lot of *debugging sessions* (a looot). Google/StackOverflow/ChatGPT were my main resources in finding solutions. 
+In my first run around with playing fantasy hoops, I wanted to explore the capabilities of Yahoo's Fantasy API and see what insightful extractions I can make out of it -- like analyzing the transaction data and seeing if there are any patterns of players added/dropped at certain times, etc. This analysis initially started in a google colab notebook, where I used `ngrok` as a local testing site to design the dashboard. However, each time I deployed the ngrok website, it'd be a new url. So now that I landed on something acceptable, I wanted to host it online so I could share it with my friends. Hosting this project on render.com made me learn a lot of things, with a lot of *debugging sessions*. Google/StackOverflow/ChatGPT were my main resources in finding solutions. I will link below useful resources I found during this project.
 
 I tackled through a lot of things:
 - Sifting and sorting through Yahoo's Fantasy API for NBA data. A lot of nested dictionaries to weed through to get matchup data in our league. 
@@ -20,6 +20,11 @@ Hope you enjoy!
   - 9CAT - 9 Categories (FT%, FG%, 3PTM, PTS, TREB, AST, STL, BLK, TO)
 
 
+  For reference:
+  - [Yahoo Fantasy API documentation](https://yahoo-fantasy-api.readthedocs.io/en/latest/yahoo_fantasy_api.html)
+  - [Render.com Documentation](https://render.com/docs)
+
+    
 ***Below is a ChatGPT response to my prompt: So all in all what did I learn after all my debugging sessions***
 
   ---This is a **Yahoo NBA Fantasy API dashboard**, hosted on **Render.com**. This guide covers **key lessons learned** during development and deployment.
