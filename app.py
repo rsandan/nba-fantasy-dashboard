@@ -22,32 +22,24 @@ pd.set_option('display.max_columns', None)
 
 # Load secrets from Render environment variables
 keypair_data = os.getenv("KEYPAIR_JSON")
-print(keypair_data)
 if keypair_data:
     keypair = json.loads(keypair_data)
-    print("keypair read in: SUCCESS")
-    print(keypair)
 else:
     raise ValueError("KEYPAIR_JSON environment variable is missing!")
 
 NGROK_AUTH_TOKEN = os.getenv("NGROK_AUTH_TOKEN")
-if NGROK_AUTH_TOKEN:
-    print("NGROK AUTH TOKEN read in: SUCCESS")
-else:
+if not NGROK_AUTH_TOKEN:
     raise ValueError("NGROK_AUTH_TOKEN environment variable is missing!")
 
 # Use OAuth2 authentication without interactive input
 try:
-    sc = OAuth2(None, None, from_dict=keypair_data)
-    print(sc)
+    sc = OAuth2(None, None, from_dict=keypair)
     if not sc.token_is_valid():  # If token expired, refresh automatically
         sc.refresh_access_token()
 except Exception as e:
     raise RuntimeError(f"OAuth authentication failed: {str(e)}")
 
 subprocess.run(["ngrok", "authtoken", NGROK_AUTH_TOKEN], check=True)
-
-
 
 team_ids = {'454.l.74601.t.1': "Sam's Swag Team",
             '454.l.74601.t.2': "Dooms's Dazzling Team",
