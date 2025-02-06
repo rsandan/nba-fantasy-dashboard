@@ -10,5 +10,3 @@ services:
     envVars:
       - key: KEYPAIR_JSON
         sync: false
-      - key: NGROK_AUTH_TOKEN
-        sync: false
