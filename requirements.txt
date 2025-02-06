@@ -1,0 +1,9 @@
+yahoo_fantasy_api
+streamlit
+pyngrok
+nba_api
+matplotlib
+plotly
+pandas
+numpy
+seaborn
