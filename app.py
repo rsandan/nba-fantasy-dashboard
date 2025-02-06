@@ -524,8 +524,16 @@ st.markdown("""
 """, unsafe_allow_html=True)
 ''')
 
+# Explicitly set NGROK authentication
+ngrok.set_auth_token(NGROK_AUTH_TOKEN)
+print("✅ NGROK auth token set successfully!")
 
+# Get the correct Streamlit port dynamically
+PORT = os.getenv("PORT", 8501)  # Use Render's PORT or default to 8501
 
-conf.get_default().auth_token = NGROK_AUTH_TOKEN  # Set the token
-public_url = ngrok.connect(8501).public_url
-print(f"Streamlit app is live at: {public_url}")
+# Start NGROK tunnel
+public_url = ngrok.connect(PORT).public_url
+print(f"🚀 Streamlit app is live at: {public_url}")
+
+# Run Streamlit with the correct port
+os.system(f"streamlit run app.py --server.port {PORT} --server.address 0.0.0.0")
