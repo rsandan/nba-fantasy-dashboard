@@ -33,15 +33,21 @@ if os.path.exists(keypair_file_path):
 else:
     raise FileNotFoundError(f"Secret file {keypair_file_path} not found.")
 
-# 🔍 Debugging: Print the keys being loaded
+# 🔍 Debugging: Check if the correct keys are being loaded
 print("DEBUG: Loaded keypair.json keys ->", keypair.keys())
 print("DEBUG: Consumer Key ->", keypair.get("consumer_key"))
 print("DEBUG: Consumer Secret ->", keypair.get("consumer_secret"))
 
-# Authenticate using Yahoo OAuth
+# ✅ Manually initialize OAuth2 with correct tokens
 try:
-    sc = OAuth2(None, None, from_dict=keypair)
+    sc = OAuth2(
+        keypair["consumer_key"], 
+        keypair["consumer_secret"], 
+        access_token=keypair["access_token"], 
+        refresh_token=keypair["refresh_token"]
+    )
 
+    # 🔄 Refresh token if expired
     if not sc.token_is_valid():
         print("🔄 Refreshing expired token...")
         sc.refresh_access_token()
@@ -52,7 +58,6 @@ try:
         print("✅ Token refreshed and saved!")
 except Exception as e:
     raise RuntimeError(f"OAuth authentication failed: {str(e)}")
-
 subprocess.run(["ngrok", "authtoken", NGROK_AUTH_TOKEN], check=True)
 
 team_ids = {'454.l.74601.t.1': "Sam's Swag Team",
