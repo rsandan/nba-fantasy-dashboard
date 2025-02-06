@@ -24,16 +24,20 @@ pd.set_option('display.max_columns', None)
 keypair_data = os.getenv("KEYPAIR_JSON")
 if keypair_data:
     keypair = json.loads(keypair_data)
+    print("keypair read in: SUCCESS")
 else:
     raise ValueError("KEYPAIR_JSON environment variable is missing!")
 
 NGROK_AUTH_TOKEN = os.getenv("NGROK_AUTH_TOKEN")
-if not NGROK_AUTH_TOKEN:
+if NGROK_AUTH_TOKEN:
+    print("NGROK AUTH TOKEN read in: SUCCESS")
+else:
     raise ValueError("NGROK_AUTH_TOKEN environment variable is missing!")
 
 # Use OAuth2 authentication without interactive input
 try:
     sc = OAuth2(None, None, from_dict=keypair)
+    print(sc)
     if not sc.token_is_valid():  # If token expired, refresh automatically
         sc.refresh_access_token()
 except Exception as e:
