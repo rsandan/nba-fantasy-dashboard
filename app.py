@@ -65,9 +65,6 @@ try:
 except Exception as e:
     raise RuntimeError(f"OAuth authentication failed: {str(e)}")
 
-
-subprocess.run(["ngrok", "authtoken", NGROK_AUTH_TOKEN], check=True)
-
 team_ids = {'454.l.74601.t.1': "Sam's Swag Team",
             '454.l.74601.t.2': "Dooms's Dazzling Team",
             '454.l.74601.t.3': "Diddy Disciple",
@@ -524,16 +521,18 @@ st.markdown("""
 """, unsafe_allow_html=True)
 ''')
 
-# Explicitly set NGROK authentication
-ngrok.set_auth_token(NGROK_AUTH_TOKEN)
-print("✅ NGROK auth token set successfully!")
 
-# Get the correct Streamlit port dynamically
+# ✅ Manually configure NGROK authentication
+ngrok.set_auth_token(NGROK_AUTH_TOKEN)  # Ensure auth token is set
+os.system(f"ngrok config add-authtoken {NGROK_AUTH_TOKEN}")  # 🔥 Explicitly configure NGROK auth
+print("✅ NGROK auth token configured successfully!")
+
+# ✅ Get the correct Streamlit port dynamically
 PORT = os.getenv("PORT", 8501)  # Use Render's PORT or default to 8501
 
-# Start NGROK tunnel
+# ✅ Start NGROK tunnel
 public_url = ngrok.connect(PORT).public_url
 print(f"🚀 Streamlit app is live at: {public_url}")
 
-# Run Streamlit with the correct port
+# ✅ Run Streamlit with the correct port
 os.system(f"streamlit run app.py --server.port {PORT} --server.address 0.0.0.0")
