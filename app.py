@@ -267,9 +267,19 @@ for matchup_id, winners in matchup_winners.items():
     })
 
 df_matchups = pd.DataFrame(flat_matchup_winners)
+# Fetch team logos and map them to team names
+team_logos = {}
+
+for key in team_ids:
+    team = lg.to_team(key)
+    team_logos[team_ids[key]] = team.details()["team_logos"][0]["team_logo"]["url"]
+
+# Convert dictionary to DataFrame
+team_logos = pd.DataFrame(list(team_logos.items()), columns=["Team", "Logo URL"])
 
 standings.to_csv("standings.csv", index=False)
 df_matchups.to_csv("df_matchups.csv", index=False)
+team_logos.to_csv("team_logos.csv", index = False)
 
 with open('app.py', 'w') as f:
     f.write('''
@@ -296,6 +306,7 @@ st.set_page_config(
 final_df = pd.read_csv("final.csv").dropna(how="all")  # Full data for all weeks
 standings = pd.read_csv("standings.csv").dropna(how="all")
 df_matchups = pd.read_csv("df_matchups.csv").dropna(how="all")
+team_logos = pd.read_csv("team_logos.csv").dropna(how="all")
 
 # Format column names for standings and matchups
 standings.columns = standings.columns.str.replace("_", " ").str.title()
@@ -331,6 +342,18 @@ current_time = datetime.now(est).strftime("%B %d, %Y - %I:%M %p")
 
 # --------------- 🏠 HOME PAGE ---------------
 if selection == "🏠 Home":
+
+    # Convert logos into a list (for grid placement)
+    logo_urls = team_logos["Logo URL"].tolist()
+    
+    # Create a row of images using markdown (CSS for tight spacing)
+    logo_html = "<div style='display: flex; justify-content: flex-start; gap: 10px;'>"
+    for url in logo_urls:
+        logo_html += f"<img src='{url}' width='30' style='border-radius: 10px;'>"
+    logo_html += "</div>"
+
+    # Render the HTML in Streamlit
+    st.markdown(logo_html, unsafe_allow_html=True)
 
     st.markdown(f"### Week 15 🏀")
     st.markdown(f"""
