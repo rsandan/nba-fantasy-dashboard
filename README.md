@@ -1,4 +1,5 @@
 # 🏀 NBA Fantasy Dashboard
+![Header Image](./cover.jpg)
 
 ⚠️ Warning: Free Tier Instance Downtime
 
