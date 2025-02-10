@@ -308,15 +308,23 @@ import pytz
 from nba_api.stats.endpoints import playergamelog
 from nba_api.stats.static import players
 
-# Get current date and time
-current_datetime = datetime.now().strftime("%B %d, %Y - %I:%M %p")
-
 # Page Configuration
 st.set_page_config(
     page_title="Season 2 of Love Island (NBA)",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+# Sidebar Navigation
+st.sidebar.title("🌐 Navigation")
+pages = ["🏠 Home", "⛹🏽 Multi-player comparison", "🗣️ Free Agency"]
+selection = st.sidebar.radio("Go to", pages)
+
+# Get Current EST Time
+est = pytz.timezone('US/Eastern')
+current_time = datetime.now(est).strftime("%B %d, %Y - %I:%M %p")
+
+# Streamlit App
+st.title("Season 2 of Love Island (NBA)")
 
 # Load Data
 final_df = pd.read_csv("final.csv").dropna(how="all")  # Full data for all weeks
@@ -344,21 +352,12 @@ def format_col(col):
 
 final_df.columns = [format_col(col) for col in final_df.columns]
 
-# Streamlit App
-st.title("Season 2 of Love Island (NBA)")
-
-# Sidebar Navigation
-st.sidebar.title("🌐 Navigation")
-pages = ["🏠 Home", "⛹🏽 Multi-player comparison", "🗣️ Free Agency"]
-selection = st.sidebar.radio("Go to", pages)
-
-# Get Current EST Time
-est = pytz.timezone('US/Eastern')
-current_time = datetime.now(est).strftime("%B %d, %Y - %I:%M %p")
 
 # --------------- 🏠 HOME PAGE ---------------
 if selection == "🏠 Home":
-
+    # Update Stats Button - Reloads Streamlit Script
+    if st.button("🔄 Update Stats"):
+        st.experimental_rerun()  # Reloads the script to refresh data
     # Convert logos into a list (for grid placement)
     logo_urls = team_logos["Logo URL"].tolist()
     
