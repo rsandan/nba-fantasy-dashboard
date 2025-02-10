@@ -300,7 +300,7 @@ df_matchups = pd.read_csv("df_matchups.csv").dropna(how="all")
 # Format column names for standings and matchups
 standings.columns = standings.columns.str.replace("_", " ").str.title()
 standings["Record"] = standings["Wins"].astype(str) + "-" + standings["Losses"].astype(str) + "-" + standings["Ties"].astype(str)
-standings = standings.drop(columns=["Playoff Seed", "Games Back", "Wins", "Losses", "Ties"])
+standings = standings.drop(columns=["Playoff Seed", "Games Back", "Wins", "Losses", "Ties", "Percentage"])
 df_matchups.columns = df_matchups.columns.str.replace("_", " ").str.title()
 
 # Define columns to exclude from formatting
@@ -316,10 +316,6 @@ def format_col(col):
         return col.replace("_", " ").title()
 
 final_df.columns = [format_col(col) for col in final_df.columns]
-
-
-# Convert percentage column to 2 decimals
-standings['Percentage'] = np.round(standings['Percentage'], 2)
 
 # Streamlit App
 st.title("Season 2 of Love Island (NBA)")
@@ -372,7 +368,7 @@ if selection == "🏠 Home":
         )
 
     # combine remaining/live/completed columns
-    week_data["R-L-C"] = week_data["Remaining Games"].astype(str) + "/" + week_data["Live Games"].astype(str) + "-" + week_data["Completed Games"].astype(str)
+    week_data["Rem/Live/Comp"] = week_data["Remaining Games"].astype(str) + "/" + week_data["Live Games"].astype(str) + "/" + week_data["Completed Games"].astype(str)
     
     # Remove unwanted columns: "Team Key", "Team Id", "Fgm/A", "Ftm/A"
     columns_to_remove = ["Team Key", "Team Id", "Fgm/A", "Ftm/A", "Remaining Games", "Live Games", "Completed Games"]
