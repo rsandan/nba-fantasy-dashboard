@@ -267,6 +267,7 @@ for matchup_id, winners in matchup_winners.items():
     })
 
 df_matchups = pd.DataFrame(flat_matchup_winners)
+
 # Fetch team logos and map them to team names
 team_logos = {}
 
