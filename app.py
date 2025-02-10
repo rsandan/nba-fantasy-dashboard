@@ -299,7 +299,8 @@ df_matchups = pd.read_csv("df_matchups.csv").dropna(how="all")
 
 # Format column names for standings and matchups
 standings.columns = standings.columns.str.replace("_", " ").str.title()
-standings = standings.drop(columns=["Playoff Seed"])
+standings["Record"] = standings["Wins"].astype(str) + "-" + standings["Losses"].astype(str) + "-" + standings["Ties"].astype(str)
+standings = standings.drop(columns=["Playoff Seed", "Games Back", "Wins", "Losses", "Ties"])
 df_matchups.columns = df_matchups.columns.str.replace("_", " ").str.title()
 
 # Define columns to exclude from formatting
@@ -370,12 +371,17 @@ if selection == "🏠 Home":
             ")"
         )
 
+    # combine remaining/live/completed columns
+    week_data["R-L-C"] = week_data["Remaining Games"].astype(str) + "/" + week_data["Live Games"].astype(str) + "-" + week_data["Completed Games"].astype(str)
+    
     # Remove unwanted columns: "Team Key", "Team Id", "Fgm/A", "Ftm/A"
-    columns_to_remove = ["Team Key", "Team Id", "Fgm/A", "Ftm/A"]
+    columns_to_remove = ["Team Key", "Team Id", "Fgm/A", "Ftm/A", "Remaining Games", "Live Games", "Completed Games"]
+    
     # Also remove any column whose name contains "_Rank" except "Adjusted_Rank"
     rank_columns = [col for col in week_data.columns if "_Rank" in col and col != "Adjusted_Rank"]
     columns_to_remove.extend(rank_columns)
 
+    
     week_data = week_data.drop(columns=columns_to_remove)
 
     # Full-Width Traditional Statistics Table
