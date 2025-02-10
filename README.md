@@ -31,7 +31,7 @@ In my first run around with playing fantasy hoops, I wanted to explore the capab
   - 9CAT - 9 Categories (FT%, FG%, 3PTM, PTS, TREB, AST, STL, BLK, TO)
 
     
-###Below is a ChatGPT response to my prompt: "So all in all what did I learn after all my debugging sessions?" 
+### Below is a ChatGPT response to my prompt: "So all in all what did I learn after all my debugging sessions?" 
 - ***I will include details on what I learned about Yahoo's Fantasy API in the near future***
 
 # **Yahoo! NBA Fantasy Dashboard Deployment Guide**
