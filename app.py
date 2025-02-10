@@ -357,7 +357,7 @@ final_df.columns = [format_col(col) for col in final_df.columns]
 if selection == "🏠 Home":
     # Update Stats Button - Reloads Streamlit Script
     if st.button("🔄 Update Stats"):
-        st.experimental_rerun()  # Reloads the script to refresh data
+        st.rerun()  # Reloads the script to refresh data
     # Convert logos into a list (for grid placement)
     logo_urls = team_logos["Logo URL"].tolist()
     
