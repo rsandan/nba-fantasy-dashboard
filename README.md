@@ -1,6 +1,6 @@
 # 🏀 NBA Fantasy Dashboard
 ![Header Image](./cover.jpg)
-
+[Click here to check it out](https://nba-fantasy-dashboard.onrender.com/)
 ⚠️ Warning: Free Tier Instance Downtime
 
 This project is hosted on Render.com, using their free tier instance. One important limitation of the free tier is automatic spin-down due to inactivity.
