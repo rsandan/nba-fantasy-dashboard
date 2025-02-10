@@ -62,7 +62,7 @@ except Exception as e:
 
 team_ids = {'454.l.74601.t.1': "Sam's Swag Team",
             '454.l.74601.t.2': "Dooms's Dazzling Team",
-            '454.l.74601.t.3': "Diddy Disciple",
+            '454.l.74601.t.3': "Chunch's Challengers",
             '454.l.74601.t.4': "Han Da Dons",
             '454.l.74601.t.5': "Tyshiii",
             '454.l.74601.t.6': "Neal's Fascinating Team",
