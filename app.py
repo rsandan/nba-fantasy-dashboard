@@ -245,6 +245,10 @@ matchups = lg.matchups(week=curr_week_num)
 test1 = matchups['fantasy_content']['league'][1]['scoreboard']
 matchup_winners = extract_stat_winners(test1)  # Example usage
 
+# Fetch all team matchups using tm.matchup(week)
+flat_matchup_winners = []
+seen_matchups = set()  # To track unique matchups
+
 for key in team_ids:  # Loop through each team
     team = lg.to_team(key)  # Convert team key to team object
     opponent_key = team.matchup(curr_week_num)  # Get opponent team key
@@ -274,7 +278,6 @@ for key in team_ids:  # Loop through each team
         "Score": f"{score_a} - {score_b}",
         "Lead": winner
     })
-
 
 # ✅ Convert the list into a DataFrame
 df_matchups = pd.DataFrame(flat_matchup_winners, columns=["Matchup", "Score", "Lead"])
