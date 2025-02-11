@@ -245,42 +245,28 @@ matchups = lg.matchups(week=curr_week_num)
 test1 = matchups['fantasy_content']['league'][1]['scoreboard']
 matchup_winners = extract_stat_winners(test1)  # Example usage
 
-# Fetch all team matchups using tm.matchup(week)
+# Flatten matchup_winners into a list of dictionaries
 flat_matchup_winners = []
-seen_matchups = set()  # To track unique matchups
+for matchup_id, winners in matchup_winners.items():
+    teams = list(winners.keys())
+    scores = list(winners.values())
 
-for key in team_ids:  # Loop through each team
-    team = lg.to_team(key)  # Convert team key to team object
-    opponent_key = team.matchup(curr_week_num)  # Get opponent team key
+    if scores[0] >= scores[1]:
+        team_a, team_b = teams[0], teams[1]
+        score_a, score_b = scores[0], scores[1]
+    else:
+        team_a, team_b = teams[1], teams[0]
+        score_a, score_b = scores[1], scores[0]
 
-    if not opponent_key:  # Skip if no opponent found
-        continue
+    winner = team_a if score_a > score_b else "Tie"
 
-    # Ensure both teams exist in the dictionary
-    if key not in team_ids or opponent_key not in team_ids:
-        continue
-
-    # ✅ Sort matchup to avoid duplicates (A vs B and B vs A)
-    matchup_tuple = tuple(sorted([team_ids[key], team_ids[opponent_key]]))
-
-    if matchup_tuple in seen_matchups:
-        continue  # Skip duplicate reverse matchup
-
-    seen_matchups.add(matchup_tuple)  # Mark this matchup as seen
-
-    # ✅ Default scores to 0-0 at the start of the week
-    score_a, score_b = 0, 0
-    winner = "Tied"  # Default to "Tied"
-
-    # ✅ Append unique matchups
     flat_matchup_winners.append({
-        "Matchup": f"{matchup_tuple[0]} vs. {matchup_tuple[1]}",
+        "Matchup": f"{team_ids[team_a]} vs. {team_ids[team_b]}",
         "Score": f"{score_a} - {score_b}",
-        "Lead": winner
+        "Lead": team_ids[winner] if winner != "Tie" else "Tie"
     })
 
-# ✅ Convert the list into a DataFrame
-df_matchups = pd.DataFrame(flat_matchup_winners, columns=["Matchup", "Score", "Lead"])
+df_matchups = pd.DataFrame(flat_matchup_winners)
 
 # Fetch team logos and map them to team names
 team_logos = {}
