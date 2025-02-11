@@ -412,7 +412,7 @@ if selection == "🏠 Home":
 
    
     # Remove unwanted columns
-    columns_to_remove = ["Team Key", "Team Id", "Fgm/A", "Ftm/A", "Remaining Games", "Live Games", "Completed Games, "Aggregate Rank"]
+    columns_to_remove = ["Team Key", "Team Id", "Fgm/A", "Ftm/A", "Remaining Games", "Live Games", "Completed Games", "Aggregate Rank"]
     
     # Also remove any column whose name contains "_Rank" except "Adjusted_Rank"
     rank_columns = [col for col in week_data.columns if "_Rank" in col]
