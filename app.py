@@ -401,24 +401,32 @@ if selection == "🏠 Home":
             ")"
         )
 
-    # combine remaining/live/completed columns
+    # Combine remaining/live/completed columns
     week_data["Rem/Live/Comp"] = week_data["Remaining Games"].astype(str) + "/" + week_data["Live Games"].astype(str) + "/" + week_data["Completed Games"].astype(str)
     
-    # Remove unwanted columns: "Team Key", "Team Id", "Fgm/A", "Ftm/A"
-    columns_to_remove = ["Team Key", "Team Id", "Fgm/A", "Ftm/A", "Remaining Games", "Live Games", "Completed Games"]
+    # Combine Aggregate Rank and Adjusted Rank into a single column
+    week_data['Adjusted Rank'] = week_data['Adjusted_Rank'].astype(str) + " (" + week_data['Aggregate Rank'].astype(str) + ")"
+
+   
+    # Remove unwanted columns
+    columns_to_remove = ["Team Key", "Team Id", "Fgm/A", "Ftm/A", "Remaining Games", "Live Games", "Completed Games, "Aggregate Rank"]
     
     # Also remove any column whose name contains "_Rank" except "Adjusted_Rank"
-    rank_columns = [col for col in week_data.columns if "_Rank" in col and col != "Adjusted_Rank"]
+    rank_columns = [col for col in week_data.columns if "_Rank" in col]
     columns_to_remove.extend(rank_columns)
 
     
     week_data = week_data.drop(columns=columns_to_remove)
+    
+    # Assuming week_data is your DataFrame
+    desired_order = ['Week', 'Name', 'Rem/Live/Comp', 'Adjusted Rank', 'FG%', 'FT%', '3PTM', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TO']
+    week_data = week_data[desired_order]
 
     # Full-Width Traditional Statistics Table
     st.subheader("Traditional Statistics")
     st.markdown(f"""
         <p style="font-size: 14px; color: white; opacity: 0.7; margin-top: -10px;">
-            <b>Aggregate Rank</b> – Summarizes all individual rankings into one total score. The lower the number, the better.
+            <b>Adjusted Rank</b> – Summarizes all individual rankings into one total score. The lower the number, the better.
         </p>
     """, unsafe_allow_html=True)
     st.dataframe(week_data, use_container_width=True, hide_index=True)
