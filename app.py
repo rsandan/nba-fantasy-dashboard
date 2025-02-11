@@ -28,15 +28,6 @@ if os.path.exists(keypair_file_path):
 else:
     raise FileNotFoundError(f"Secret file {keypair_file_path} not found.")
 
-# 🔍 Debugging: Print loaded values to confirm they exist
-print("DEBUG: Loaded keypair.json keys ->", keypair.keys())
-print("DEBUG: Consumer Key ->", keypair.get("consumer_key"))
-print("DEBUG: Consumer Secret ->", keypair.get("consumer_secret"))
-print("DEBUG: Access Token ->", keypair.get("access_token"))
-print("DEBUG: Refresh Token ->", keypair.get("refresh_token"))
-print("DEBUG: Token Time ->", keypair.get("token_time"))
-print("DEBUG: Token Type ->", keypair.get("token_type"))
-
 # ✅ Manually initialize OAuth2 with token_time & token_type to prevent verifier request
 try:
     sc = OAuth2(
