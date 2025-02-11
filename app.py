@@ -11,35 +11,32 @@ import plotly.graph_objects as go
 import datetime
 import seaborn as sns
 from collections import Counter
-
-# import api stuff
 from yahoo_oauth import OAuth2
 import yahoo_fantasy_api as yfa
 
 # Set the maximum number of columns to display to None
 pd.set_option('display.max_columns', None)
 
-keypair_file_path = "/etc/secrets/keypair.json"
-
 # Load keypair.json
+keypair_file_path = "/etc/secrets/keypair.json"
 if os.path.exists(keypair_file_path):
     with open(keypair_file_path, "r") as f:
         keypair = json.load(f)
 else:
     raise FileNotFoundError(f"Secret file {keypair_file_path} not found.")
 
-# ✅ Manually initialize OAuth2 with token_time & token_type to prevent verifier request
+# Manually initialize OAuth2 with token_time & token_type to prevent verifier request
 try:
     sc = OAuth2(
         keypair["consumer_key"], 
         keypair["consumer_secret"], 
         access_token=keypair["access_token"], 
         refresh_token=keypair["refresh_token"],
-        token_time=keypair["token_time"],  # ✅ Explicitly pass token_time
-        token_type=keypair["token_type"]   # ✅ Explicitly pass token_type
+        token_time=keypair["token_time"],
+        token_type=keypair["token_type"]
     )
 
-    # 🔄 Refresh token if expired
+    # Refresh token if expired
     if not sc.token_is_valid():
         print("🔄 Refreshing expired token...")
         sc.refresh_access_token()
