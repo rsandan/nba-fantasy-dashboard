@@ -94,26 +94,26 @@ curr_week_num = lg.current_week()
 
 # grabs everyone's stats and data regarding week n using the matchups function
 def overall_weekly_matchup_stats(week_num):
+    """
+    Fetches and processes weekly matchup stats from Yahoo Fantasy API.
+    Returns a DataFrame with structured data for all teams in that week.
+    """
+    # Get matchups data
     matchups = lg.matchups(week=week_num)
-    matchup_keys = list(matchups['fantasy_content']['league'][1]['scoreboard']['0']['matchups'].keys())
+    matchups_data = matchups['fantasy_content']['league'][1]['scoreboard']['0']['matchups']
 
-    temp = []
-
-    for key in matchup_keys:
-        if key != 'count':
-            t1 = matchups['fantasy_content']['league'][1]['scoreboard']['0']['matchups'][str(key)]['matchup']['0']['teams']['1']['team']
-            t2 = matchups['fantasy_content']['league'][1]['scoreboard']['0']['matchups'][str(key)]['matchup']['0']['teams']['0']['team']
-            temp.append(t1)
-            temp.append(t2)
+    # Extract all team data from matchups
+    teams = [
+        matchups_data[key]['matchup']['0']['teams'][str(i)]['team']
+        for key in matchups_data if key != 'count' 
+        for i in range(2)  # Extract both teams (index 0 & 1)
+    ]
 
     list_of_dfs = []
 
-    for i in range(len(temp)):
-        data = temp[i]
-        # Initialize the output dictionary with relevant columns
+    for team in teams:
         output = {
             "week": None,
-            # 'winner_team_key': None,
             "team_key": None,
             "team_id": None,
             "name": None,
@@ -122,70 +122,63 @@ def overall_weekly_matchup_stats(week_num):
             "completed_games": None
         }
 
-        # Populate the dictionary
+        # Create a dictionary for team stats with default `None`
         team_stats_dict = {label: None for label in stat_labels.values()}
 
-        for item in data[0]:
-            # Extract flat fields
-            if "team_key" in item:
-                output["team_key"] = item["team_key"]
-            if "team_id" in item:
-                output["team_id"] = item["team_id"]
-            if "name" in item:
-                output["name"] = item["name"]
+        # Extract flat fields (team_key, team_id, name)
+        output.update({
+            "team_key": team[0].get("team_key"),
+            "team_id": team[0].get("team_id"),
+            "name": team[0].get("name"),
+        })
 
-        for item in data:
+        # Extract stats and remaining games
+        for item in team:
             if isinstance(item, dict):
-                # Extract nested fields
                 if "team_stats" in item:
-                    output["week"] = item['team_stats']["week"]
+                    output["week"] = item['team_stats'].get("week")
                     for stat in item["team_stats"]["stats"]:
                         stat_id = stat["stat"]["stat_id"]
                         if stat_id in stat_labels:
                             team_stats_dict[stat_labels[stat_id]] = stat["stat"]["value"]
-                if "team_remaining_games" in item:
-                    output["remaining_games"] = item["team_remaining_games"]["total"]["remaining_games"]
-                    output["live_games"] = item["team_remaining_games"]["total"]["live_games"]
-                    output["completed_games"] = item["team_remaining_games"]["total"]["completed_games"]
 
-        # Merge team stats into output dictionary
+                if "team_remaining_games" in item:
+                    remaining_games = item["team_remaining_games"]["total"]
+                    output.update({
+                        "remaining_games": remaining_games.get("remaining_games"),
+                        "live_games": remaining_games.get("live_games"),
+                        "completed_games": remaining_games.get("completed_games"),
+                    })
+
+        # Merge stats into output dictionary
         output.update(team_stats_dict)
 
-        # Convert to a single-row DataFrame
+        # Convert to DataFrame
         df = pd.DataFrame([output])
         list_of_dfs.append(df)
 
-    # Concatenate them vertically
+    # Combine all team data
     result = pd.concat(list_of_dfs, ignore_index=True)
 
     # Convert relevant columns to numeric types
-    categories = ['week', 'team_id', 'remaining_games', 'live_games', 'completed_games',
-                  'FG%', 'FT%', '3PTM', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TO']
+    numeric_cols = ['week', 'team_id', 'remaining_games', 'live_games', 'completed_games',
+                    'FG%', 'FT%', '3PTM', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TO']
+    result[numeric_cols] = result[numeric_cols].apply(pd.to_numeric, errors='coerce')
 
-    for col in categories:
-        result[col] = pd.to_numeric(result[col], errors='coerce')
+    # Rank teams within each category (TO is reversed)
+    for category in stat_labels.values():
+        result[f"{category}_Rank"] = result[category].rank(ascending=(category == "TO"))
 
-    stat_categories = ['FG%', 'FT%', '3PTM', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TO']
+    # Calculate aggregate rank
+    rank_columns = [f"{cat}_Rank" for cat in stat_labels.values()]
+    result['Aggregate Rank'] = result[rank_columns].sum(axis=1)
 
-    # Rank each team within each category (lower is better for TO, higher is better for others)
-    for category in stat_categories:
-        if category == 'TO':  # Reverse ranking for TO since lower is better
-            result[category + '_Rank'] = result[category].rank(ascending=True)
-        else:
-            result[category + '_Rank'] = result[category].rank(ascending=False)
+    # Rank by aggregate score
+    result['Adjusted_Rank'] = result['Aggregate Rank'].rank(ascending=True, method='min').astype(int)
 
-    # Sum the ranks to get a total score (lower total rank is better)
-    result['Aggregate Rank'] = result[[cat + '_Rank' for cat in stat_categories]].sum(axis=1)
+    # Sort teams by Adjusted Rank
+    return result.sort_values(by='Adjusted_Rank')
 
-    # Create a new column 'Adjusted_Rank' by ranking the 'Aggregate Rank' column
-    result['Adjusted_Rank'] = result['Aggregate Rank'].rank(ascending=True, method='min')
-
-    # Convert the ranks to integers
-    result['Adjusted_Rank'] = result['Adjusted_Rank'].astype(int)
-
-    # Sort teams by their total rank
-    result = result.sort_values(by='Adjusted_Rank')
-    return result
 
 overall_stats = []
 for i in range(1, curr_week_num + 1):
