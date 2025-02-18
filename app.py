@@ -300,7 +300,7 @@ logo_path = os.path.join(os.path.dirname(__file__), "ryanlogo.png")
 st.logo(
     logo_path,
     link="https://rsandan.github.io",
-    size="medium"
+    size="large"
 )
 st.sidebar.title("🌐 Navigation")
 pages = ["🏠 Home", "⛹🏽 Multi-player comparison", "🗣️ Free Agency"]
