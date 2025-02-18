@@ -291,7 +291,16 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
 # Sidebar Navigation
+
+# Get the absolute path of the logo
+logo_path = os.path.join(os.path.dirname(__file__), "ryanlogo.png")
+st.logo(
+    logo_path,
+    link="https://rsandan.github.io",
+    size="medium"
+)
 st.sidebar.title("🌐 Navigation")
 pages = ["🏠 Home", "⛹🏽 Multi-player comparison", "🗣️ Free Agency"]
 selection = st.sidebar.radio("Go to", pages)
