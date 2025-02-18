@@ -1,6 +1,7 @@
 yahoo_oauth
 yahoo_fantasy_api
 streamlit
+boto3
 nba_api
 matplotlib
 plotly
