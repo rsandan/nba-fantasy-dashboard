@@ -220,7 +220,7 @@ def extract_stat_winners(data):
 
     return results
 
-def df_matchups():
+def get_matchups_df():
     matchups = lg.matchups(week=curr_week_num)
     test1 = matchups['fantasy_content']['league'][1]['scoreboard']
     matchup_winners = extract_stat_winners(test1)  # Example usage
@@ -247,12 +247,26 @@ def df_matchups():
         })
     
     df_matchups = pd.DataFrame(flat_matchup_winners)
+    return df_matchups
 
 
 def get_team_logos(lg, team_ids):
-    logos = {
-        team_name: lg.to_team(key).details()["team_logos"][0]["team_logo"]["url"]
-        for key, team_name in team_ids.items()
-    }
+    logos = {team_name: lg.to_team(key).details()["team_logos"][0]["team_logo"]["url"]
+        for key, team_name in team_ids.items()}
     team_logos = pd.DataFrame(logos.items(), columns=["Team", "Logo URL"])
     return team_logos
+
+
+if __name__ == "__main__":
+    lg = authenticate_yahoo_api()
+    curr_week = lg.current_week()
+    
+    season_df = get_full_season_stats(lg, curr_week)
+    standings_df = get_standings(lg)
+    matchups_df = get_matchups_df(lg, curr_week)
+    logo_df = get_team_logos(lg, team_ids)
+
+    print(season_df.head())
+    print(standings_df.head())
+    print(matchups_df.head())
+    print(logo_df.head())
