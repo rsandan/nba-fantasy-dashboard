@@ -78,7 +78,7 @@ def authenticate_yahoo_api(path = "/etc/secrets/keypair.json"):
     return sc
     
 # grabs everyone's stats and data regarding week n using the matchups function
-def overall_weekly_matchup_stats(week_num, sc):
+def overall_weekly_matchup_stats(sc):
     """
     Fetches and processes weekly matchup stats from Yahoo Fantasy API.
     Returns a DataFrame with structured data for all teams in that week.
@@ -92,6 +92,9 @@ def overall_weekly_matchup_stats(week_num, sc):
     
     # get the league object
     lg = gm.to_league(leagues[0])
+
+    # grab curr week num
+    week_num = lg.current_week()
     
     matchups = lg.matchups(week=week_num)
     matchup_keys = list(matchups['fantasy_content']['league'][1]['scoreboard']['0']['matchups'].keys())
@@ -220,7 +223,7 @@ def extract_stat_winners(data):
 
     return results
 
-def get_matchups_df():
+def get_matchups_df(lg):
     matchups = lg.matchups(week=curr_week_num)
     test1 = matchups['fantasy_content']['league'][1]['scoreboard']
     matchup_winners = extract_stat_winners(test1)  # Example usage
@@ -255,18 +258,3 @@ def get_team_logos(lg, team_ids):
         for key, team_name in team_ids.items()}
     team_logos = pd.DataFrame(logos.items(), columns=["Team", "Logo URL"])
     return team_logos
-
-
-if __name__ == "__main__":
-    lg = authenticate_yahoo_api()
-    curr_week = lg.current_week()
-    
-    season_df = get_full_season_stats(lg, curr_week)
-    standings_df = get_standings(lg)
-    matchups_df = get_matchups_df(lg, curr_week)
-    logo_df = get_team_logos(lg, team_ids)
-
-    print(season_df.head())
-    print(standings_df.head())
-    print(matchups_df.head())
-    print(logo_df.head())
