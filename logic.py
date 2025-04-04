@@ -75,16 +75,7 @@ def authenticate_yahoo_api(path = "/etc/secrets/keypair.json"):
     except Exception as e:
         raise RuntimeError(f"OAuth authentication failed: {str(e)}")
 
-    return sc
-    
-# grabs everyone's stats and data regarding week n using the matchups function
-def overall_weekly_matchup_stats(sc):
-    """
-    Fetches and processes weekly matchup stats from Yahoo Fantasy API.
-    Returns a DataFrame with structured data for all teams in that week.
-    """
-
-    # get game object
+     # get game object
     gm = yfa.Game(sc, 'nba')
     
     # get league ids (could be multiple if you're in more than 1)
@@ -92,6 +83,15 @@ def overall_weekly_matchup_stats(sc):
     
     # get the league object
     lg = gm.to_league(leagues[0])
+
+    return lg
+    
+# grabs everyone's stats and data regarding week n using the matchups function
+def overall_weekly_matchup_stats(lg):
+    """
+    Fetches and processes weekly matchup stats from Yahoo Fantasy API.
+    Returns a DataFrame with structured data for all teams in that week.
+    """
 
     # grab curr week num
     week_num = lg.current_week()
