@@ -51,7 +51,7 @@ curr_week = lg.current_week()
 print(curr_week)
 
 # Fetch dataframes
-season_df = get_full_season_stats(lg, curr_week)
+season_df = get_full_season_stats(lg)
 standings_df = get_standings(lg)
 matchups_df = get_matchups_df(lg, curr_week)
 logos_df = get_team_logos(lg, team_ids)
