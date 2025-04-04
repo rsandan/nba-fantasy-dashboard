@@ -8,6 +8,15 @@ import pytz
 from nba_api.stats.endpoints import playergamelog
 from nba_api.stats.static import players
 
+from logic import (
+    authenticate_yahoo_api,
+    get_full_season_stats,
+    get_standings,
+    get_matchups_df,
+    get_team_logos,
+    team_ids  # if you need the mapping
+)
+
 # Page Configuration
 st.set_page_config(
     page_title="Season 2 of Love Island (NBA)",
@@ -36,10 +45,25 @@ current_time = datetime.now(est).strftime("%B %d, %Y - %I:%M %p")
 st.title("Season 2 of Love Island (NBA)")
 
 # Load Data
+
+# Authenticate and get league object
+lg = authenticate_yahoo_api()
+curr_week = lg.current_week()
+
+# Fetch dataframes
+season_df = get_full_season_stats(lg, curr_week)
+standings_df = get_standings(lg)
+matchups_df = get_matchups_df(lg, curr_week)
+team_logos = get_team_logos(lg, team_ids)
+
+
 final_df = pd.read_csv("final.csv").dropna(how="all")  # Full data for all weeks
 standings = pd.read_csv("standings.csv").dropna(how="all")
 df_matchups = pd.read_csv("df_matchups.csv").dropna(how="all")
 team_logos = pd.read_csv("team_logos.csv").dropna(how="all")
+
+
+
 
 # Format column names for standings and matchups
 standings.columns = standings.columns.str.replace("_", " ").str.title()
