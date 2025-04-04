@@ -189,7 +189,8 @@ def overall_weekly_matchup_stats(lg):
     
     return result
 
-def get_full_season_stats(lg, curr_week_num):
+def get_full_season_stats(lg):
+    curr_week_num = lg.current_week()
     weekly_stats = [overall_weekly_matchup_stats(lg, i) for i in range(1, curr_week_num + 1)]
     final = pd.concat(weekly_stats, ignore_index=True)
     return final
