@@ -1,55 +1,23 @@
-# import libraries
-import os
-import subprocess
-import json
-import pandas as pd
-import numpy as np
-from plotly.subplots import make_subplots
-import matplotlib.pyplot as plt
-import random
-import plotly.graph_objects as go
+# Standard library
 import datetime
-import seaborn as sns
+import json
+import os
+import random
+import subprocess
 from collections import Counter
+
+# Third-party libraries
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+import seaborn as sns
 from yahoo_oauth import OAuth2
 import yahoo_fantasy_api as yfa
 
-# Set the maximum number of columns to display to None
-pd.set_option('display.max_columns', None)
-
-# Load keypair.json
-keypair_file_path = "/etc/secrets/keypair.json"
-if os.path.exists(keypair_file_path):
-    with open(keypair_file_path, "r") as f:
-        keypair = json.load(f)
-else:
-    raise FileNotFoundError(f"Secret file {keypair_file_path} not found.")
-
-# Manually initialize OAuth2 with token_time & token_type to prevent verifier request
-try:
-    sc = OAuth2(
-        keypair["consumer_key"], 
-        keypair["consumer_secret"], 
-        access_token=keypair["access_token"], 
-        refresh_token=keypair["refresh_token"],
-        token_time=keypair["token_time"],
-        token_type=keypair["token_type"]
-    )
-
-    # Refresh token if expired
-    if not sc.token_is_valid():
-        print("🔄 Refreshing expired token...")
-        sc.refresh_access_token()
-
-        # Save the updated token
-        with open(keypair_file_path, "w") as f:
-            json.dump(sc.credentials, f)
-        print("✅ Token refreshed and saved!")
-except Exception as e:
-    raise RuntimeError(f"OAuth authentication failed: {str(e)}")
-
 team_ids = {'454.l.74601.t.1': "Sam's Swag Team",
-            '454.l.74601.t.2': "Dooms's Dazzling Team",
+            '454.l.74601.t.2': "Doomenshmirtz Evil Inc.",
             '454.l.74601.t.3': "Chunch's Challengers",
             '454.l.74601.t.4': "Han Da Dons",
             '454.l.74601.t.5': "Tyshiii",
@@ -74,30 +42,57 @@ stat_labels = {
     '19': 'TO'
 }
 
-# get game object
-gm = yfa.Game(sc, 'nba')
+def authenticate_yahoo_api(path = "/etc/secrets/keypair.json"):
+    # Load keypair.json
+    keypair_file_path = path
+    
+    if os.path.exists(keypair_file_path):
+        with open(keypair_file_path, "r") as f:
+            keypair = json.load(f)
+    else:
+        raise FileNotFoundError(f"Secret file {keypair_file_path} not found.")
+    
+    # Manually initialize OAuth2 with token_time & token_type to prevent verifier request
+    try:
+        sc = OAuth2(
+            keypair["consumer_key"], 
+            keypair["consumer_secret"], 
+            access_token=keypair["access_token"], 
+            refresh_token=keypair["refresh_token"],
+            token_time=keypair["token_time"],
+            token_type=keypair["token_type"]
+        )
+    
+        # Refresh token if expired
+        if not sc.token_is_valid():
+            print("🔄 Refreshing expired token...")
+            sc.refresh_access_token()
+    
+            # Save the updated token
+            with open(keypair_file_path, "w") as f:
+                json.dump(sc.credentials, f)
+            print("✅ Token refreshed and saved!")
+    except Exception as e:
+        raise RuntimeError(f"OAuth authentication failed: {str(e)}")
 
-# get league ids (could be multiple if you're in more than 1)
-leagues = gm.league_ids()
-
-# get the league object
-lg = gm.to_league(leagues[0])
-
-# get your team key
-teamkey = lg.team_key()
-
-# get your team object
-team = lg.to_team(teamkey)
-
-# return current week
-curr_week_num = lg.current_week()
-
+    return sc
+    
 # grabs everyone's stats and data regarding week n using the matchups function
-def overall_weekly_matchup_stats(week_num):
+def overall_weekly_matchup_stats(week_num, sc):
     """
     Fetches and processes weekly matchup stats from Yahoo Fantasy API.
     Returns a DataFrame with structured data for all teams in that week.
     """
+
+    # get game object
+    gm = yfa.Game(sc, 'nba')
+    
+    # get league ids (could be multiple if you're in more than 1)
+    leagues = gm.league_ids()
+    
+    # get the league object
+    lg = gm.to_league(leagues[0])
+    
     matchups = lg.matchups(week=week_num)
     matchup_keys = list(matchups['fantasy_content']['league'][1]['scoreboard']['0']['matchups'].keys())
 
@@ -188,27 +183,19 @@ def overall_weekly_matchup_stats(week_num):
 
     # Sort teams by their total rank
     result = result.sort_values(by='Adjusted_Rank')
+    
     return result
 
+def get_full_season_stats(lg, curr_week_num):
+    weekly_stats = [overall_weekly_matchup_stats(lg, i) for i in range(1, curr_week_num + 1)]
+    final = pd.concat(weekly_stats, ignore_index=True)
+    return final
 
-overall_stats = []
-for i in range(1, curr_week_num + 1):
-    result = overall_weekly_matchup_stats(i)
-    overall_stats.append(result)
-
-# Concatenate them vertically
-final = pd.concat(overall_stats, ignore_index=True)
-
-# Save the full data for all weeks (instead of just the current week)
-final.to_csv("final.csv", index=False)
-
-df = pd.DataFrame(lg.standings())
-
-# Expand the 'outcome_totals' column into separate columns
-outcome_totals_df = pd.json_normalize(df['outcome_totals'])
-
-# Combine with the original DataFrame
-standings = pd.concat([df.drop(columns=['outcome_totals', 'team_key']), outcome_totals_df], axis=1)
+def get_standings(lg):
+    df = pd.DataFrame(lg.standings())
+    outcome_df = pd.json_normalize(df['outcome_totals'])
+    standings = pd.concat([df.drop(columns=['outcome_totals', 'team_key']), outcome_df], axis=1)
+    return standings
 
 def extract_stat_winners(data):
     """
@@ -233,43 +220,39 @@ def extract_stat_winners(data):
 
     return results
 
-matchups = lg.matchups(week=curr_week_num)
-test1 = matchups['fantasy_content']['league'][1]['scoreboard']
-matchup_winners = extract_stat_winners(test1)  # Example usage
+def df_matchups():
+    matchups = lg.matchups(week=curr_week_num)
+    test1 = matchups['fantasy_content']['league'][1]['scoreboard']
+    matchup_winners = extract_stat_winners(test1)  # Example usage
+    
+    # Flatten matchup_winners into a list of dictionaries
+    flat_matchup_winners = []
+    for matchup_id, winners in matchup_winners.items():
+        teams = list(winners.keys())
+        scores = list(winners.values())
+    
+        if scores[0] >= scores[1]:
+            team_a, team_b = teams[0], teams[1]
+            score_a, score_b = scores[0], scores[1]
+        else:
+            team_a, team_b = teams[1], teams[0]
+            score_a, score_b = scores[1], scores[0]
+    
+        winner = team_a if score_a > score_b else "Tie"
+    
+        flat_matchup_winners.append({
+            "Matchup": f"{team_ids[team_a]} vs. {team_ids[team_b]}",
+            "Score": f"{score_a} - {score_b}",
+            "Lead": team_ids[winner] if winner != "Tie" else "Tie"
+        })
+    
+    df_matchups = pd.DataFrame(flat_matchup_winners)
 
-# Flatten matchup_winners into a list of dictionaries
-flat_matchup_winners = []
-for matchup_id, winners in matchup_winners.items():
-    teams = list(winners.keys())
-    scores = list(winners.values())
 
-    if scores[0] >= scores[1]:
-        team_a, team_b = teams[0], teams[1]
-        score_a, score_b = scores[0], scores[1]
-    else:
-        team_a, team_b = teams[1], teams[0]
-        score_a, score_b = scores[1], scores[0]
-
-    winner = team_a if score_a > score_b else "Tie"
-
-    flat_matchup_winners.append({
-        "Matchup": f"{team_ids[team_a]} vs. {team_ids[team_b]}",
-        "Score": f"{score_a} - {score_b}",
-        "Lead": team_ids[winner] if winner != "Tie" else "Tie"
-    })
-
-df_matchups = pd.DataFrame(flat_matchup_winners)
-
-# Fetch team logos and map them to team names
-team_logos = {}
-
-for key in team_ids:
-    team = lg.to_team(key)
-    team_logos[team_ids[key]] = team.details()["team_logos"][0]["team_logo"]["url"]
-
-# Convert dictionary to DataFrame
-team_logos = pd.DataFrame(list(team_logos.items()), columns=["Team", "Logo URL"])
-
-standings.to_csv("standings.csv", index=False)
-df_matchups.to_csv("df_matchups.csv", index=False)
-team_logos.to_csv("team_logos.csv", index = False)
+def get_team_logos(lg, team_ids):
+    logos = {
+        team_name: lg.to_team(key).details()["team_logos"][0]["team_logo"]["url"]
+        for key, team_name in team_ids.items()
+    }
+    team_logos = pd.DataFrame(logos.items(), columns=["Team", "Logo URL"])
+    return team_logos
