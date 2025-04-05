@@ -53,7 +53,7 @@ print(curr_week)
 # Fetch dataframes
 season_df = get_full_season_stats(lg)
 standings_df = get_standings(lg)
-matchups_df = get_matchups_df(lg, curr_week)
+matchups_df = get_matchups_df(lg)
 logos_df = get_team_logos(lg, team_ids)
 
 
