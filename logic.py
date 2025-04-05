@@ -87,14 +87,11 @@ def authenticate_yahoo_api(path = "/etc/secrets/keypair.json"):
     return lg
     
 # grabs everyone's stats and data regarding week n using the matchups function
-def overall_weekly_matchup_stats(lg):
+def overall_weekly_matchup_stats(lg, week_num):
     """
     Fetches and processes weekly matchup stats from Yahoo Fantasy API.
     Returns a DataFrame with structured data for all teams in that week.
     """
-
-    # grab curr week num
-    week_num = lg.current_week()
     
     matchups = lg.matchups(week=week_num)
     matchup_keys = list(matchups['fantasy_content']['league'][1]['scoreboard']['0']['matchups'].keys())
@@ -225,6 +222,7 @@ def extract_stat_winners(data):
     return results
 
 def get_matchups_df(lg):
+    curr_week_num = lg.current_week()
     matchups = lg.matchups(week=curr_week_num)
     test1 = matchups['fantasy_content']['league'][1]['scoreboard']
     matchup_winners = extract_stat_winners(test1)  # Example usage
