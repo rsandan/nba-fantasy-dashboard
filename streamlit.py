@@ -157,6 +157,115 @@ if selection == "🏠 Home":
     """, unsafe_allow_html=True)
     st.dataframe(week_data, use_container_width=True, hide_index=True)
 
+
+# --------------- ⛹🏽 MULTI-PLAYER COMPARISON ---------------
+elif selection == "⛹🏽 Multi-player comparison":
+    st.title("⛹🏽 Multi-player comparison")
+
+    def get_active_players():
+        all_players = players.get_players()
+        active_players = {p["full_name"]: p["id"] for p in all_players if p["is_active"]}
+        return active_players
+
+    active_players = get_active_players()
+
+    def get_player_headshot(player_id):
+        return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png"
+
+    def get_player_stats(player_id, player_name, period, mode):
+        from nba_api.stats.endpoints import playergamelog
+        gamelog = playergamelog.PlayerGameLog(player_id=player_id, season="2024-25", season_type_all_star="Regular Season")
+        df = gamelog.get_data_frames()[0]
+
+        if df.empty:
+            return None
+
+        df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="%b %d, %Y", errors='coerce')
+
+        if period != "season":
+            time_cutoff = pd.Timestamp.today() - pd.Timedelta(days=period)
+            df = df[df["GAME_DATE"] >= time_cutoff]
+
+        relevant_stats = ["MIN", "FGM", "FGA", "FG_PCT", "FG3M",
+                          "FG3A", "FG3_PCT", "FTM", "FTA", "FT_PCT",
+                          "OREB", "DREB", "REB", "AST", "STL",
+                          "BLK", "TOV", "PF", "PTS", "PLUS_MINUS"]
+
+        df = df[relevant_stats]
+
+        if mode == "Average":
+            stats = df.mean()
+            stats["FG_PCT"] = round(df.loc[df["FGA"] > 0, "FG_PCT"].mean(), 3) if (df["FGA"] > 0).any() else 0
+            stats["FG3_PCT"] = round(df.loc[df["FG3A"] > 0, "FG3_PCT"].mean(), 3) if (df["FG3A"] > 0).any() else 0
+            stats["FT_PCT"] = round(df.loc[df["FTA"] > 0, "FT_PCT"].mean(), 3) if (df["FTA"] > 0).any() else 0
+            for col in stats.index:
+                if col not in ["FG_PCT", "FG3_PCT", "FT_PCT"]:
+                    stats[col] = round(stats[col], 1)
+        else:
+            stats = df.sum()
+            stats = stats.drop(["FG_PCT", "FG3_PCT", "FT_PCT"])
+            stats = stats.round(1)
+
+        stats["Player"] = player_name
+        stats["Headshot"] = get_player_headshot(player_id)
+        return stats
+
+    def compare_players(player_list, period, mode):
+        all_stats = []
+        for player in player_list:
+            player_id = active_players.get(player)
+            if player_id:
+                stats = get_player_stats(player_id, player, period, mode)
+                if stats is not None:
+                    all_stats.append(stats)
+        return pd.DataFrame(all_stats) if all_stats else None
+
+    num_players = st.selectbox("Select Number of Players to Compare", options=[2, 3, 4, 5], index=0)
+
+    selected_players = []
+    for i in range(num_players):
+        player = st.selectbox(f"Select Player {i+1}", list(active_players.keys()), key=f"player_{i}")
+        selected_players.append(player)
+
+    period_options = {
+        "Last 7 Days (Average)": (7, "Average"),
+        "Last 7 Days (Total)": (7, "Total"),
+        "Last 14 Days (Average)": (14, "Average"),
+        "Last 14 Days (Total)": (14, "Total"),
+        "Last 30 Days (Average)": (30, "Average"),
+        "Last 30 Days (Total)": (30, "Total"),
+        "Full Season (Average)": ("season", "Average"),
+        "Full Season (Total)": ("season", "Total")
+    }
+    selected_period_label = st.selectbox("Select Time Period", list(period_options.keys()), index=0)
+    period_value, mode = period_options[selected_period_label]
+
+    if st.button("Compare Players"):
+        with st.spinner("Fetching player stats..."):
+            combined_df = compare_players(selected_players, period_value, mode)
+            if combined_df is not None:
+                st.success("Comparison Generated!")
+                ordered_columns = ["Headshot", "Player"] + [col for col in combined_df.columns if col not in ["Headshot", "Player"]]
+                combined_df = combined_df[ordered_columns]
+
+                def image_formatter(url):
+                    return f'<img src="{url}" width="75">'
+
+                pct_columns = {"FG_PCT": "FG%", "FG3_PCT": "3PT FG%", "FT_PCT": "FT%"}
+                combined_df.rename(columns=pct_columns, inplace=True)
+
+                st.markdown(
+                    combined_df.to_html(
+                        escape=False,
+                        formatters={"Headshot": image_formatter},
+                        index=False
+                    ),
+                    unsafe_allow_html=True
+                )
+            else:
+                st.error("No game data available for the selected players and period.")
+
+
 # Footer
 st.markdown("""
     <style>
