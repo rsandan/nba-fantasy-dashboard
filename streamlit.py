@@ -92,7 +92,7 @@ if selection == "🏠 Home":
     # Render the HTML in Streamlit
     st.markdown(logo_html, unsafe_allow_html=True)
 
-    st.markdown(f"### Week 18🏀")
+    st.markdown(f"### Week 22 🏀")
     st.markdown(f"""
         <p style="font-size: 14px; font-style: italic; color: white; opacity: 0.7; margin-top: -10px;">
             Score snapshot as of {current_time} EST
