@@ -1,10 +1,10 @@
-yahoo_oauth
-yahoo_fantasy_api
-streamlit
-boto3
-nba_api
-matplotlib
-plotly
-pandas
-numpy
-seaborn
+# Data sources
+yahoo_oauth>=2.1
+yahoo_fantasy_api>=2.12
+nba_api>=1.10
+# App + analytics
+streamlit>=1.50
+pandas>=2.2
+numpy>=1.26
+plotly>=5.20
+tzdata>=2024.1

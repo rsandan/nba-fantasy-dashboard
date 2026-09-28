@@ -6,7 +6,17 @@ services:
     branch: main
     plan: free
     buildCommand: pip install -r requirements.txt
-    startCommand: streamlit run app.py
+    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      # Yahoo OAuth JSON (consumer_key, consumer_secret, access_token, refresh_token,
+      # token_time, token_type). Alternatively mount it as the secret file keypair.json.
       - key: KEYPAIR_JSON
         sync: false
+      # Optional: pin the league. Otherwise the newest NBA league on the account is used.
+      - key: YAHOO_LEAGUE_ID
+        sync: false
+      # Optional: set to 1 to serve the synthetic demo league (no Yahoo calls).
+      - key: FANTASY_DEMO
+        value: "0"

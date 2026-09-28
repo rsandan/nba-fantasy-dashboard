@@ -1,0 +1,12 @@
+# secrets
+keypair.json
+oauth2.json
+ngrok_token.txt
+.streamlit/secrets.toml
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+# test scratch
+_pagetest_*.py

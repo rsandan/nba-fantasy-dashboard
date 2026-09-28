@@ -1,0 +1,4128 @@
+From 5eb0d1acee61a4d176bd9fd01fd2ff4a20a0d279 Mon Sep 17 00:00:00 2001
+From: Ryan Sandan <rsandan@berkeley.edu>
+Date: Sun, 27 Sep 2026 23:40:32 -0700
+Subject: [PATCH] Season 3 revamp: matchup model, power rankings, player
+ valuation, trade/streaming tools
+
+- Monte Carlo H2H matchup simulator on per-game team rates with pooled category
+  covariance, empirical-Bayes shrinkage toward roster priors, and parameter uncertainty
+- Walk-forward backtest (Brier, log loss, BSS, calibration) vs empirical and coin-flip baselines
+- All-play records, schedule luck, power ratings, playoff odds (head / headone formats)
+- Replacement-aware 9-cat z-scores with punts, volume-weighted percentages, season blending
+- Trade analyzer (context-weighted, roster-spot aware), streaming board, free-agency analytics
+- Runtime league discovery (no hard-coded league/team ids or season), FGM/A parsing,
+  writable OAuth refresh, per-week caching, demo mode, 34 tests + CI
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KzMHxq1qrfz6kbRxA6guQ2
+---
+ .github/workflows/tests.yml |  15 +
+ .gitignore                  |  12 +
+ .streamlit/config.toml      |  12 +
+ README.md                   | 243 +++++++-------
+ app.py                      | 629 ++++++++++++++++++++++++++++++++++++
+ fantasy/__init__.py         |   1 +
+ fantasy/categories.py       |  95 ++++++
+ fantasy/charts.py           | 125 +++++++
+ fantasy/data_source.py      |  82 +++++
+ fantasy/demo.py             | 292 +++++++++++++++++
+ fantasy/matchup_model.py    | 417 ++++++++++++++++++++++++
+ fantasy/nba_data.py         | 227 +++++++++++++
+ fantasy/power.py            | 223 +++++++++++++
+ fantasy/trade.py            | 115 +++++++
+ fantasy/transactions.py     |  96 ++++++
+ fantasy/valuation.py        | 115 +++++++
+ fantasy/yahoo_client.py     | 348 ++++++++++++++++++++
+ logic.py                    | 259 ---------------
+ pytest.ini                  |   5 +
+ render.yaml                 |  34 +-
+ requirements-dev.txt        |   2 +
+ requirements.txt            |  20 +-
+ streamlit.py                | 275 ----------------
+ tests/test_app.py           |  26 ++
+ tests/test_core.py          | 234 ++++++++++++++
+ 25 files changed, 3212 insertions(+), 690 deletions(-)
+ create mode 100644 .github/workflows/tests.yml
+ create mode 100644 .gitignore
+ create mode 100644 .streamlit/config.toml
+ create mode 100644 app.py
+ create mode 100644 fantasy/__init__.py
+ create mode 100644 fantasy/categories.py
+ create mode 100644 fantasy/charts.py
+ create mode 100644 fantasy/data_source.py
+ create mode 100644 fantasy/demo.py
+ create mode 100644 fantasy/matchup_model.py
+ create mode 100644 fantasy/nba_data.py
+ create mode 100644 fantasy/power.py
+ create mode 100644 fantasy/trade.py
+ create mode 100644 fantasy/transactions.py
+ create mode 100644 fantasy/valuation.py
+ create mode 100644 fantasy/yahoo_client.py
+ delete mode 100644 logic.py
+ create mode 100644 pytest.ini
+ create mode 100644 requirements-dev.txt
+ delete mode 100644 streamlit.py
+ create mode 100644 tests/test_app.py
+ create mode 100644 tests/test_core.py
+
+diff --git a/.github/workflows/tests.yml b/.github/workflows/tests.yml
+new file mode 100644
+index 0000000..2995158
+--- /dev/null
++++ b/.github/workflows/tests.yml
+@@ -0,0 +1,15 @@
++name: tests
++on: [push, pull_request]
++jobs:
++  test:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++      - uses: actions/setup-python@v5
++        with:
++          python-version: "3.11"
++          cache: pip
++      - run: pip install -r requirements-dev.txt
++      - run: pytest -q
++        env:
++          FANTASY_DEMO: "1"
+diff --git a/.gitignore b/.gitignore
+new file mode 100644
+index 0000000..1e834bb
+--- /dev/null
++++ b/.gitignore
+@@ -0,0 +1,12 @@
++# secrets
++keypair.json
++oauth2.json
++ngrok_token.txt
++.streamlit/secrets.toml
++# python
++__pycache__/
++*.pyc
++.pytest_cache/
++.venv/
++# test scratch
++_pagetest_*.py
+diff --git a/.streamlit/config.toml b/.streamlit/config.toml
+new file mode 100644
+index 0000000..e7ed293
+--- /dev/null
++++ b/.streamlit/config.toml
+@@ -0,0 +1,12 @@
++[theme]
++base = "dark"
++primaryColor = "#3987e5"
++backgroundColor = "#111110"
++secondaryBackgroundColor = "#1a1a19"
++textColor = "#ffffff"
++
++[server]
++headless = true
++
++[browser]
++gatherUsageStats = false
+diff --git a/README.md b/README.md
+index 3d659e8..40536d9 100644
+--- a/README.md
++++ b/README.md
+@@ -2,143 +2,118 @@
+ ![Header Image](./cover.jpg)
+ [Click here to check it out](https://nba-fantasy-dashboard.onrender.com/)
+ 
+-
+-⚠️ Warning: Free Tier Instance Downtime
+-
+-This project is hosted on Render.com, using their free tier instance. One important limitation of the free tier is automatic spin-down due to inactivity.
+-- If there are no active requests for a period of time, the instance will stop running.
+-- When a new request is made after inactivity, Render will restart the instance, which can cause a delay of ~50+ seconds before the app is available again.
+-- So if no one has entered the site in a while, the first person who does will experience a blank webpage basically... but give it a min or two and refresh the page and you'll see it 👍🏽
+-
+----
+-## Introduction
+-In my first run around with playing fantasy hoops, I wanted to explore the capabilities of Yahoo's Fantasy API and see what insightful extractions I can make out of it — analyzing matchup data (head-to-head), free agency transaction data, looking for patterns of players added/dropped at certain times, etc. This analysis initially started in a local `google colab` notebook, where I used `ngrok` python library as an initial mock up. However, each time I spun up the site, it'd be a new url. So now that I landed on something acceptable, I wanted to host it online so I could share it with my friends. Hosting this project on `render.com` made me learn a lot of things, with a lot of *debugging sessions*. `Google/StackOverflow/ChatGPT` were my main resources in finding solutions. 
+-
+-## 🚀 What I learned:
+-- OAuth 2.0 (specifically OAuth initialization without requiring user input/login)
+-- Writing Environment Variables & Secret Files for Yahoo’s access tokens and refresh tokens (no more Enter Verifier: errors 🎉)
+-- Successful Deployment (via Render.com)
+-- Understanding Yahoo Fantasy API Structure for retrieving stats, standings, and player movements
+-- Hosting Web Apps on Render and working with authentication challenges
+-- [Yahoo Fantasy API documentation](https://yahoo-fantasy-api.readthedocs.io/en/latest/yahoo_fantasy_api.html)
+-- [Render.com Documentation](https://render.com/docs)
+-
+-## 📊 Yahoo! Fantasy League Details
+-**League Name**: Season 2 of Love Island (NBA)
+-**League Details**: H2H 10T 9CAT
+-  - H2H - Head to head (Weekly matchup)
+-  - 10T - 10 Team
+-  - 9CAT - 9 Categories (FT%, FG%, 3PTM, PTS, TREB, AST, STL, BLK, TO)
+-
+-    
+-### Below is a ChatGPT response to my prompt: "So all in all what did I learn after all my debugging sessions?" 
+-- ***I will include details on what I learned about Yahoo's Fantasy API in the near future***
+-
+-# **Yahoo! NBA Fantasy Dashboard Deployment Guide**
+-### This is a **Yahoo NBA Fantasy API dashboard**, hosted on **Render.com**. This guide covers **key lessons learned** during development and deployment. ###
+-
+-## **1️⃣ OAuth2 Authentication with Yahoo Fantasy API**
+-
+-### **What I Learned**
+-- Yahoo Fantasy API uses **OAuth2**, which requires **client credentials** (client ID, client secret). So make sure you create a Yahoo Developer account.
+-- A **keypair.json** file is needed to store **access tokens** and **refresh tokens**.
+-- **Access tokens expire**, so we need to **refresh tokens automatically**.
+-- The `redirect_uri=oob` (out-of-band) **is deprecated**—we need to specify a valid redirect URI in Yahoo Developer settings.
+-- **Manually initializing OAuth2** in Python helps avoid interactive prompts:
+-  
+-  ```python
+-  sc = OAuth2(
+-      keypair["consumer_key"],
+-      keypair["consumer_secret"],
+-      access_token=keypair["access_token"],
+-      refresh_token=keypair["refresh_token"],
+-      token_time=keypair["token_time"],  
+-      token_type=keypair["token_type"]  
+-  )
+-  ```
+-
+-- **Refreshing the token** automatically when expired:
+-  
+-  ```python
+-  if not sc.token_is_valid():
+-      sc.refresh_access_token()
+-  ```
+-
+----
+-
+-## **2️⃣ Environment Variables & Secrets Management**
+-
+-### **What I Learned**
+-- **Do not hardcode API keys** (use environment variables or secret files).
+-- In **Render.com**, store secrets in **Environment Variables** or `/etc/secrets/`.
+-- Access them in Python like this:
+-  
+-  ```python
+-  import os
+-  NGROK_AUTH_TOKEN = os.getenv("NGROK_AUTH_TOKEN")
+-  ```
+-
+-- **Updating keypair.json** requires replacing the secret file manually.
+-
+----
+-
+-## **3️⃣ Why We Removed Ngrok** 
+-
+-### **What I Learned**
+-- **Ngrok is useful for local testing**, but it’s not needed for Render hosting.
+-- Free Ngrok accounts allow **only one active tunnel at a time**, which caused `ERR_NGROK_108`.
+-- Render **already provides a public URL**, so **Ngrok is unnecessary**.
+-
+-### **Steps Taken**
+-✅ **Removed all Ngrok references** from the code.  
+-✅ **Used Render's default URL** instead of manually tunneling traffic.  
+-✅ **Updated the start command** for Render.
+-
+----
+-
+-## **4️⃣ Deploying to Render.com**
+-
+-### **What I Learned**
+-- Create a **`render.yaml`** file to define deployment settings.
+-- Store API keys in **Render's Environment Variables** or **Secret Files**.
+-- **Start Command for Streamlit apps**:
+-  
+-  ```bash
+-  streamlit run app.py --server.port $PORT --server.address 0.0.0.0
+-  ```
+-  
+-- **Debugging Render Logs** helps fix deployment issues.
++⚠️ Hosted on Render's free tier, so the app spins down when idle. If nobody has visited in a while, the first load takes ~50 seconds. Give it a minute and refresh.
+ 
+ ---
+ 
+-## **5️⃣ Using Git Properly**
+-
+-### **What I Learned**
+-- **Avoid pushing secrets to GitHub** (use `.gitignore`).
+-- Commands to remove sensitive files from GitHub history:
+-  
+-  ```bash
+-  git rm --cached keypair.json ngrok_token.txt
+-  echo "keypair.json" >> .gitignore
+-  echo "ngrok_token.txt" >> .gitignore
+-  git commit -m "Removed sensitive files from GitHub"
+-  git push origin main
+-  ```
+-  
+-- Keep **environment variables secure** instead of storing secrets in the repo.
++## What this is
+ 
+----
+-
+-## **Conclusion**
+-
+-🔥 **Now the app is fully deployed on Render.com** and can be shared with others!  
+-💡 **Biggest lesson:** OAuth2, token handling, and proper deployment practices are crucial for real-world web applications.
++A Streamlit site for my friends' Yahoo Fantasy Basketball league (**Love Island (NBA)**, H2H, 10 teams, 9 categories: FG%, FT%, 3PTM, PTS, REB, AST, STL, BLK, TO).
+ 
+----
+-
+-### **Next Steps**
+-- ✅ **Share the Render URL** with friends.  
+-- ✅ **Monitor logs for any errors**.  
+-- ✅ **Add new features** (e.g., more data visualizations).  
++Season 1 was a scoreboard: standings, this week's matchups, and a "sum of category ranks" table. For season 3 I rebuilt it as a decision tool with a real model underneath:
+ 
+----
++| Page | What it answers | Method |
++|---|---|---|
++| **This week** | Who's going to win each matchup, category by category? | Monte Carlo simulation of the rest of the week (banked stats + remaining games) |
++| **Power rankings** | Who's actually good, and who's been lucky? | All-play records, schedule luck, model-based power rating, playoff odds |
++| **Matchup lab** | Team A vs Team B in a neutral week? How good is the model? | Same simulator + a walk-forward backtest with calibration |
++| **Player values** | Who helps a 9-cat team most, for my build? | Replacement-aware z-scores with punt support, early-season shrinkage |
++| **Trade analyzer** | Should I take this deal? Would they? | z-score deltas weighted by each team's swing categories, roster-spot pricing |
++| **Streaming board** | Who do I add today? | Value above replacement × games left, weighted by which categories are still in play this week |
++| **Free agency** | Who works the wire and does it pay off? | Add/drop pairing, hold times, stream rate, timing heatmap, activity vs all-play |
++| **Player comparison** | Side by side for 2 to 5 players | League-wide per-game lines, volume-weighted percentages |
++
++Everything runs without credentials in **demo mode** on a synthetic league: `FANTASY_DEMO=1 streamlit run app.py`.
++
++## Modeling notes
++
++### 1. The matchup model (`fantasy/matchup_model.py`)
++Each team-week is reduced to **per player-game rates** over 11 additive components (FGA, FG%, FTA, FT%, 3PTM, PTS, REB, AST, STL, BLK, TO). Working per game instead of per week separates roster quality from schedule volume, since Yahoo tells us each team's games remaining in advance.
++
++- **Team means:** a recency-weighted average (6-week half-life) shrunk toward a prior worth 3 weeks of data. The prior is the team's **current roster projection** (rescaled to the league's observed per-started-game level), so week-1 predictions and post-trade teams are sensible.
++- **Noise:** week-to-week residuals are pooled across the league into an 11×11 covariance, rescaled by games played, and regularized (30% shrinkage of off-diagonals). Categories are correlated: a high-volume week lifts PTS, 3PTM, FGA *and* TO together. Treating them as independent overstates sweeps.
++- **Parameter uncertainty:** simulations add the posterior variance of each team's mean (`1 / (weeks of evidence + prior weeks)`), so early-season probabilities aren't overconfident. For season simulations that uncertainty is drawn once per simulated season, because a team's true strength doesn't re-roll every week.
++- **Percentages are simulated correctly:** draw attempts and make rate, compute makes, then divide. Totals are rounded to integers and percentages to Yahoo's 3-decimal display precision, so category ties happen at realistic rates (they're common in BLK and STL).
++
++**Backtest (Matchup lab):** walk-forward. For every completed week *w*, fit on weeks before *w* only and predict every category of every matchup before tipoff. It reports Brier score, log loss, Brier skill score vs a coin flip, an empirical "compare past weeks directly" baseline, and a reliability curve. On the synthetic league the model scores a category Brier skill score of roughly 0.28 versus about 0.09 for the empirical baseline, and the calibration curve tracks the diagonal. Real-league numbers show up on the page once five weeks are complete.
++
++### 2. Player valuation (`fantasy/valuation.py`)
++- **Replacement-aware pool:** z-scores are measured against the top `teams × roster spots` players, chosen iteratively, not against all ~550 NBA players (that inflates everyone).
++- **Percentages use impact:** `(player% − pool%) × attempts`. A 60% shooter on 3 FGA barely moves a weekly FG%; a 52% shooter on 20 FGA moves it a lot.
++- **Punting** removes a category from the total *and* from pool selection.
++- **Early-season shrinkage:** each player's current line is blended with last season using `w = GP / (GP + 15)`, so a hot five-game start doesn't top the board. Before opening night this makes the page a draft board built on last season.
++- **Availability-adjusted value** discounts players who miss games.
++
++### 3. League analytics (`fantasy/power.py`, `fantasy/transactions.py`)
++- **All-play:** every week, every team is scored against *all* opponents. The gap between actual and all-play win% is **schedule luck**.
++- **Playoff odds:** 2,000 simulated seasons using the real remaining schedule and the league's scoring format (`head` = every category counts in the standings, `headone` = one result per matchup).
++- **Trades:** category deltas are weighted by `0.25 + 0.75 × 4p(1−p)`, where *p* is the team's all-play win rate in that category. Swing categories matter most; locked or punted ones barely count. Uneven trades are priced at replacement level for the roster spot opened or lost. The analyzer shows both sides' view, so you can find deals that help both teams.
++- **Wire activity:** each add is paired with the same team's next drop of that player. Hold time is censored for players still rostered, so medians aren't biased short.
++
++## Fixes to the season-1 code
++
++- Removed the hard-coded league key and `team_ids` dict. The league and team names are discovered at runtime, so the app survives Yahoo's new league key every season.
++- Removed the hard-coded `season="2024-25"` and `"Week 22"`.
++- The scoreboard parser now keeps `FGM/A` and `FTM/A`. The old one dropped them, which made correct percentage aggregation impossible.
++- Player comparison averaged per-game FG% (so 1-for-1 counted the same as 10-for-25). It now uses total makes ÷ total attempts.
++- OAuth tokens refresh into a writable temp copy. Render mounts `/etc/secrets` read-only, so in-place refreshes failed once the one-hour token expired.
++- **Caching:** completed weeks are cached for the life of the process, the live week for 5 minutes, and NBA stats for 6 hours. Previously every page view re-fetched every week from Yahoo.
++- Renamed the entry point from `streamlit.py` to `app.py`. A script named `streamlit.py` shadows the `streamlit` package on import.
++- Built the "Free Agency" page, which was listed in the sidebar but never implemented.
++- Removed the unused dependencies (`boto3`, `matplotlib`, `seaborn`).
++
++## Project layout
++
++```
++app.py                     Streamlit UI (8 pages), caching layer
++fantasy/
++  categories.py            9-cat definitions, tie/NaN-aware category comparison
++  yahoo_client.py          OAuth, league discovery, pure JSON parsers (scoreboard, transactions)
++  nba_data.py              nba_api per-game stats, schedule, season blending, name matching
++  matchup_model.py         team-strength model, Monte Carlo simulator, walk-forward backtest
++  power.py                 all-play, luck, power ratings, playoff odds
++  valuation.py             replacement-aware z-scores, punts
++  trade.py                 trade evaluation, context weights, streaming board
++  transactions.py          add/drop pairing, activity, timing
++  charts.py                Plotly figures (dark theme, colorblind-checked palette)
++  data_source.py           live vs. demo switch
++  demo.py                  synthetic league generator (tests + demo mode)
++tests/                     34 tests: parsing, math, model skill/calibration, every page renders
++```
++
++## Running it
++
++```bash
++pip install -r requirements-dev.txt
++FANTASY_DEMO=1 streamlit run app.py        # no credentials needed
++pytest -q                                  # 34 tests, ~15s
++```
++
++**Live mode** needs Yahoo OAuth credentials: create an app at developer.yahoo.com, complete the OAuth flow once locally with `yahoo_oauth`, and provide the resulting JSON (`consumer_key`, `consumer_secret`, `access_token`, `refresh_token`, `token_time`, `token_type`) via one of:
++
++- `KEYPAIR_JSON` or `YAHOO_OAUTH_JSON` environment variable (raw JSON), or
++- a secret file at `/etc/secrets/keypair.json` (Render) or `./keypair.json` (local, git-ignored).
++
++Optional: `YAHOO_LEAGUE_ID` (or `YAHOO_LEAGUE_KEY`) to pin a league. Otherwise the newest NBA league on the account is used. If Yahoo can't be reached, the site falls back to the demo league and says why instead of crashing.
++
++**Render:** `render.yaml` sets the start command to `streamlit run app.py --server.port $PORT --server.address 0.0.0.0`. If the service was created by hand, update the start command in the Render dashboard to match.
++
++## Known limitations
++
++- Per-game rates assume Yahoo's `completed_games` counts started player-games. Daily lineup decisions (benching, IL moves) aren't modeled beyond that.
++- The backtest plugs in the games each team actually got. The schedule is known ahead of time, but late injuries aren't, so treat backtest skill as a slight upper bound.
++- Yahoo's playoff tiebreakers aren't exposed in the API, so exact ties in the playoff simulation are broken at random.
++- stats.nba.com rate-limits cloud IPs. Calls retry with backoff, and pages degrade gracefully if it's down.
++
++## Season-1 notes (OAuth + deployment lessons)
++
++<details>
++<summary>What I learned getting the first version live</summary>
++
++- Yahoo's API uses OAuth2. Tokens expire after an hour, so refresh them automatically (`sc.token_is_valid()` / `sc.refresh_access_token()`).
++- `redirect_uri=oob` is deprecated. Set a real redirect URI in the Yahoo developer settings.
++- Keep secrets out of Git (`.gitignore`, environment variables, Render secret files).
++- ngrok is handy for local demos, but Render already provides a public URL.
++- Render logs are the fastest way to debug deploys.
++- [Yahoo Fantasy API docs](https://yahoo-fantasy-api.readthedocs.io/en/latest/yahoo_fantasy_api.html) · [Render docs](https://render.com/docs)
++</details>
+diff --git a/app.py b/app.py
+new file mode 100644
+index 0000000..2c18d4e
+--- /dev/null
++++ b/app.py
+@@ -0,0 +1,629 @@
++"""Love Island (NBA) fantasy dashboard.
++
++Run:  streamlit run app.py              (live, needs Yahoo OAuth secrets)
++      FANTASY_DEMO=1 streamlit run app.py   (synthetic league, no credentials)
++"""
++from __future__ import annotations
++
++from datetime import date, datetime
++
++import numpy as np
++import pandas as pd
++import streamlit as st
++
++from fantasy import charts, nba_data
++from fantasy import matchup_model as mm
++from fantasy import power, trade
++from fantasy import transactions as txa
++from fantasy.categories import CATEGORIES, CATEGORY_NAMES, category_value, compare
++from fantasy.data_source import connect
++from fantasy.valuation import Z_COLS, value_players
++
++st.set_page_config(page_title="Love Island (NBA)", page_icon="🏀", layout="wide",
++                   initial_sidebar_state="expanded")
++ET = "America/New_York"
++
++
++# ============================================================================ data
++@st.cache_resource(show_spinner="Connecting to Yahoo…")
++def get_source():
++    return connect()
++
++
++SOURCE, FALLBACK_REASON = get_source()
++
++
++@st.cache_data(ttl=600, show_spinner=False)
++def load_meta(_tag: str):
++    return SOURCE.meta()
++
++
++META = load_meta("demo" if SOURCE.is_demo else "live")
++KEY = META.league_key
++
++
++@st.cache_data(ttl=3600, show_spinner=False)
++def load_teams(key: str) -> pd.DataFrame:
++    return SOURCE.teams()
++
++
++@st.cache_data(ttl=None, max_entries=64, show_spinner=False)
++def load_final_week(key: str, week: int) -> pd.DataFrame:
++    """Completed weeks are immutable: cache for the life of the process."""
++    return SOURCE.week(week)
++
++
++@st.cache_data(ttl=300, show_spinner=False)
++def load_live_week(key: str, week: int) -> pd.DataFrame:
++    return SOURCE.week(week)
++
++
++@st.cache_data(ttl=43200, show_spinner=False)
++def load_future_weeks(key: str, first: int, last: int) -> pd.DataFrame:
++    frames = []
++    for w in range(first, last + 1):
++        try:
++            frames.append(SOURCE.week(w))
++        except Exception:
++            break  # Yahoo stops returning pairings past the known schedule
++    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
++
++
++def team_weeks() -> pd.DataFrame:
++    """Weeks 1..current. The fetch loop is cheap after the first load (per-week cache)."""
++    frames = [load_final_week(KEY, w) for w in range(META.start_week, META.current_week)]
++    frames.append(load_live_week(KEY, META.current_week))
++    df = pd.concat([f for f in frames if not f.empty], ignore_index=True)
++    return df
++
++
++@st.cache_data(ttl=900, show_spinner=False)
++def load_transactions(key: str) -> pd.DataFrame:
++    return SOURCE.transactions()
++
++
++@st.cache_data(ttl=1800, show_spinner=False)
++def load_rosters(key: str, team_keys: tuple) -> pd.DataFrame:
++    return SOURCE.rosters(list(team_keys))
++
++
++@st.cache_data(ttl=1800, show_spinner=False)
++def load_free_agents(key: str) -> pd.DataFrame:
++    return SOURCE.free_agents()
++
++
++@st.cache_data(ttl=21600, show_spinner=False)
++def load_players(season: str, last_n: int = 0) -> pd.DataFrame:
++    return SOURCE.players(season, last_n)
++
++
++@st.cache_data(ttl=86400, show_spinner=False)
++def load_schedule(season: str) -> pd.DataFrame:
++    return SOURCE.schedule(season)
++
++
++# ======================================================================= analytics
++TODAY = SOURCE.today()
++SEASON = nba_data.season_for(TODAY)
++PRIOR = nba_data.previous_season(SEASON)
++
++
++@st.cache_data(ttl=21600, show_spinner="Blending current and prior season…")
++def blended_players(season: str) -> pd.DataFrame:
++    return nba_data.blend_seasons(load_players(season), load_players(nba_data.previous_season(season)))
++
++
++@st.cache_data(ttl=1800, show_spinner=False)
++def valuation(players: pd.DataFrame, punts: tuple, n_teams: int, roster_size: int):
++    return value_players(players, n_teams=n_teams, roster_size=roster_size, punts=punts)
++
++
++@st.cache_data(ttl=1800, show_spinner=False)
++def matched_rosters(key: str, values: pd.DataFrame) -> pd.DataFrame:
++    teams = load_teams(key)
++    ros = load_rosters(key, tuple(teams["team_key"]))
++    return trade.match_players(ros, values) if not ros.empty else ros
++
++
++@st.cache_data(ttl=300, show_spinner="Fitting team-strength model…")
++def fit_model(tw: pd.DataFrame, priors: pd.DataFrame | None, team_keys: tuple) -> mm.TeamModel:
++    return mm.fit_team_model(tw, teams=list(team_keys), priors=priors)
++
++
++@st.cache_data(ttl=None, max_entries=8, show_spinner="Backtesting the model week by week…")
++def run_backtest(done: pd.DataFrame) -> dict:
++    return mm.backtest(done, n_sims=1500)
++
++
++@st.cache_data(ttl=300, show_spinner="Simulating the rest of the season…")
++def season_sim(_model: mm.TeamModel, tw: pd.DataFrame, future: pd.DataFrame, model_sig: str):
++    return power.playoff_odds(_model, tw, future, META.num_playoff_teams, META.scoring_type,
++                              META.playoff_start_week, n_sims=2000)
++
++
++@st.cache_data(ttl=300, show_spinner=False)
++def ratings(_model: mm.TeamModel, model_sig: str) -> pd.Series:
++    return power.power_ratings(_model, n_sims=1200)
++
++
++def model_signature(tw: pd.DataFrame) -> str:
++    return f"{KEY}|{len(tw)}|{tw[['games', 'PTS']].sum().sum():.0f}"
++
++
++def core():
++    """Everything most pages need, computed once per rerun (each step is cached)."""
++    tw = team_weeks()
++    teams = load_teams(KEY)
++    names = dict(zip(teams["team_key"], teams["team_name"]))
++    players = blended_players(SEASON)
++    vals = valuation(players, (), META.num_teams, META.roster_size) if not players.empty else None
++    ros = matched_rosters(KEY, vals.table) if vals is not None else pd.DataFrame()
++    priors = mm.roster_priors(ros, players) if vals is not None else None
++    model = fit_model(tw, priors, tuple(teams["team_key"]))
++    ap = power.all_play(tw)
++    return dict(tw=tw, teams=teams, names=names, players=players, vals=vals, rosters=ros,
++                model=model, ap=ap, sig=model_signature(tw))
++
++
++def banked_score(a: pd.Series, b: pd.Series) -> tuple[int, int, int]:
++    res = [compare(category_value(a, c), category_value(b, c), c) for c in CATEGORIES]
++    return sum(r == 1 for r in res), sum(r == 0 for r in res), sum(r == 0.5 for r in res)
++
++
++def fmt_cat(value: float, cat_name: str) -> str:
++    if value != value:
++        return "–"
++    return f"{value:.3f}".lstrip("0") if cat_name in ("FG%", "FT%") else f"{value:.0f}"
++
++
++def pct(x) -> str:
++    """Probability label that never claims certainty a simulation can't support."""
++    if x is None or x != x:
++        return "–"
++    if x < 0.005:
++        return "<1%"
++    if x > 0.995:
++        return ">99%"
++    return f"{x:.0%}"
++
++
++# ========================================================================== header
++def header(title: str, subtitle: str | None = None):
++    st.title(title)
++    now = datetime.now(pd.Timestamp.now(tz=ET).tz).strftime("%b %d, %Y · %I:%M %p ET")
++    src = "Demo league (synthetic data)" if SOURCE.is_demo else "Live from Yahoo Fantasy"
++    st.caption(f"Week {META.current_week} · {src} · snapshot {now}"
++               + (f" · {subtitle}" if subtitle else ""))
++    if SOURCE.is_demo and FALLBACK_REASON and FALLBACK_REASON != "FANTASY_DEMO is set":
++        st.info(f"Couldn't reach Yahoo, so this is the demo league. Reason: `{FALLBACK_REASON}`")
++
++
++# =========================================================================== pages
++def page_home():
++    header(META.name)
++    c = core()
++    tw, names, model, ap = c["tw"], c["names"], c["model"], c["ap"]
++    if st.button("🔄 Refresh live scores"):
++        load_live_week.clear()
++        st.rerun()
++
++    live = tw[tw["week"] == META.current_week]
++    st.subheader(f"Week {META.current_week} matchups")
++    if live.empty:
++        st.write("No matchups scheduled yet. Check back after the draft.")
++    else:
++        st.caption("Win probabilities come from 4,000 simulations of each matchup: what's already "
++                   "banked this week plus each team's remaining games drawn from its fitted "
++                   "per-game rates (with category correlations). Ties in a category count half.")
++        sims = mm.live_matchups(model, live, n_sims=4000)
++        cols = st.columns(2)
++        for i, sim in enumerate(sims):
++            a = live[live["team_key"] == sim.team_a].iloc[0]
++            b = live[live["team_key"] == sim.team_b].iloc[0]
++            w, l, t = banked_score(a, b) if a["status"] != "preevent" else (0, 0, 0)
++            with cols[i % 2].container(border=True):
++                na, nb = names.get(sim.team_a, sim.team_a), names.get(sim.team_b, sim.team_b)
++                st.markdown(f"**{na}** vs **{nb}**")
++                m1, m2, m3 = st.columns(3)
++                m1.metric(f"{na[:18]} win", pct(sim.p_win))
++                m2.metric("Tie", pct(sim.p_tie))
++                m3.metric(f"{nb[:18]} win", pct(sim.p_loss))
++                gl = lambda r: "?" if pd.isna(r["remaining_games"]) else f"{r['remaining_games']:.0f}"
++                st.caption(f"Current score {w}-{l}-{t} · games left {gl(a)} vs {gl(b)} · "
++                           f"projected categories {sim.exp_cats_a:.1f}–{9 - sim.exp_cats_a:.1f}")
++                rows = []
++                for cat in CATEGORIES:
++                    rows.append({"Cat": cat.name,
++                                 na[:14]: fmt_cat(category_value(a, cat), cat.name),
++                                 nb[:14]: fmt_cat(category_value(b, cat), cat.name),
++                                 "Proj": f"{fmt_cat(sim.proj_a[cat.name], cat.name)} – "
++                                         f"{fmt_cat(sim.proj_b[cat.name], cat.name)}",
++                                 "Win %": sim.cat_prob[cat.name]})
++                st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch",
++                             column_config={"Win %": st.column_config.ProgressColumn(
++                                 f"{na[:10]} wins", format="percent", min_value=0, max_value=1)})
++
++    st.subheader("Standings")
++    summ = ap["summary"]
++    if summ.empty:
++        st.write("Standings appear after the first completed week.")
++        return
++    table = summ.assign(team=summ["team_key"].map(names))
++    rec_col = "cat_record" if META.scoring_type == "head" else "h2h_record"
++    rec_pct = "cat_pct" if META.scoring_type == "head" else "h2h_pct"
++    table = table.sort_values(rec_pct, ascending=False)
++    table.insert(0, "Rank", range(1, len(table) + 1))
++    luck = "luck_category" if META.scoring_type == "head" else "luck_matchup"
++    st.dataframe(
++        table[["Rank", "team", rec_col, rec_pct, "ap_record", "ap_pct", luck]],
++        hide_index=True, width="stretch",
++        column_config={
++            "team": "Team", rec_col: "Record", rec_pct: st.column_config.NumberColumn("Win %", format="%.3f"),
++            "ap_record": "All-play record",
++            "ap_pct": st.column_config.NumberColumn("All-play %", format="%.3f",
++                                                    help="Record if you played every team every week"),
++            luck: st.column_config.NumberColumn("Luck", format="%+.3f",
++                                                help="Actual win% minus all-play win%. Positive = soft schedule."),
++        })
++
++
++def page_power():
++    header("Power rankings", "schedule-neutral team strength")
++    c = core()
++    tw, names, model, ap = c["tw"], c["names"], c["model"], c["ap"]
++    summ = ap["summary"]
++    if summ.empty:
++        st.info("Power rankings need at least one completed week.")
++        return
++    pr = ratings(model, c["sig"])
++    future = load_future_weeks(KEY, META.current_week + 1, META.playoff_start_week - 1) \
++        if not SOURCE.is_demo else tw[tw["status"] == "preevent"]
++    live = tw[tw["week"] == META.current_week]
++    fut = pd.concat([live, future], ignore_index=True) if not future.empty else live
++    odds = season_sim(model, tw, fut, c["sig"]).set_index("team_key")
++    form = power.recent_form(ap["weekly"])
++
++    t = summ.set_index("team_key")
++    board = pd.DataFrame({
++        "Team": [names.get(k, k) for k in t.index],
++        "Power": pr.reindex(t.index).values,
++        "All-play %": t["ap_pct"].values,
++        "Form (3-wk half-life)": form.reindex(t.index).values,
++        "Luck": (t["luck_category"] if META.scoring_type == "head" else t["luck_matchup"]).values,
++        "Playoff odds": odds["playoff_odds"].reindex(t.index).values,
++        "#1 seed": odds["top_seed_odds"].reindex(t.index).values,
++        "Proj. final win %": odds["exp_win_pct"].reindex(t.index).values,
++    }, index=t.index).sort_values("Power", ascending=False)
++    board.insert(0, "Rank", range(1, len(board) + 1))
++    st.dataframe(board, hide_index=True, width="stretch", column_config={
++        "Power": st.column_config.ProgressColumn(
++            "Power", format="%.3f", min_value=0, max_value=1,
++            help="P(beating a random league opponent in a typical week), from the matchup model"),
++        "All-play %": st.column_config.NumberColumn(format="%.3f"),
++        "Form (3-wk half-life)": st.column_config.NumberColumn(format="%.3f"),
++        "Luck": st.column_config.NumberColumn(format="%+.3f"),
++        "Playoff odds": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1),
++        "#1 seed": st.column_config.NumberColumn(format="percent"),
++        "Proj. final win %": st.column_config.NumberColumn(format="%.3f"),
++    })
++    with st.expander("How these are computed"):
++        st.markdown(f"""
++- **Power** asks the matchup model how often each team beats every other team over a full week with
++  equal games, then averages. It's schedule-neutral, and early-season results are shrunk toward the
++  league average (and toward roster projections when rosters are available).
++- **All-play %** scores each completed week against *all* {META.num_teams - 1} opponents, not only the scheduled one.
++- **Luck** = actual win % − all-play win %. Over a season it mostly reflects the schedule, not skill.
++- **Playoff odds** simulate the remaining regular season 2,000 times with the real schedule and the
++  league's scoring format (`{META.scoring_type}`); top {META.num_playoff_teams} make it. Exact ties are
++  broken at random because Yahoo's tiebreakers aren't in the API.
++""")
++
++    l, r = st.columns(2)
++    with l:
++        st.subheader("Playoff odds")
++        st.plotly_chart(charts.probability_bars(
++            board.reset_index().rename(columns={"Team": "team_name"}), "Playoff odds"), width="stretch")
++    with r:
++        st.subheader("Schedule luck")
++        st.plotly_chart(charts.luck_bars(
++            board.reset_index().rename(columns={"Team": "team_name"}), "Luck"), width="stretch")
++    st.subheader("Category strength (all-play category win rate)")
++    st.caption("Blue = wins that category most weeks against the league, red = loses it. A column of "
++               "red for one team is a punt, deliberate or not.")
++    st.plotly_chart(charts.category_heatmap(ap["category_rates"], names), width="stretch")
++
++
++def page_matchup_lab():
++    header("Matchup lab", "any two teams, plus how well the model has predicted")
++    c = core()
++    names, model = c["names"], c["model"]
++    keys = list(names)
++    col1, col2, col3 = st.columns([2, 2, 1])
++    a = col1.selectbox("Team A", keys, format_func=names.get, index=0)
++    b = col2.selectbox("Team B", keys, format_func=names.get, index=1 if len(keys) > 1 else 0)
++    games = col3.number_input("Games each", 10, 60, int(round(model.g_ref)))
++    if a == b:
++        st.warning("Pick two different teams.")
++    else:
++        sim = mm.simulate_matchup(model, a, b, games_a=games, games_b=games, n_sims=6000)
++        m1, m2, m3, m4 = st.columns(4)
++        m1.metric(f"{names[a]} win", pct(sim.p_win))
++        m2.metric("Tie", pct(sim.p_tie))
++        m3.metric(f"{names[b]} win", pct(sim.p_loss))
++        m4.metric("Expected categories", f"{sim.exp_cats_a:.1f} – {9 - sim.exp_cats_a:.1f}")
++        st.plotly_chart(charts.category_win_bars(sim.cat_prob, names[a], names[b]), width="stretch")
++        dist = pd.Series(sim.cats_a + 0.5 * sim.ties).round(1).value_counts(normalize=True).sort_index()
++        st.caption("Distribution of categories won by " + names[a] + ": " +
++                   " · ".join(f"{k:g}: {v:.0%}" for k, v in dist.items() if v >= 0.01))
++
++    st.divider()
++    st.subheader("Model backtest")
++    done = c["tw"][c["tw"]["status"] == "postevent"]
++    if done["week"].nunique() < 5:
++        st.info("The walk-forward backtest needs at least 5 completed weeks (3 to train, 2+ to test).")
++        return
++    bt = run_backtest(done)
++    met = bt["metrics"]
++    st.markdown(
++        "Walk-forward: for each week *w*, the model is fit only on weeks before *w* and predicts every "
++        "category of every matchup before the week starts. Lower Brier/log loss is better; **BSS** is "
++        "the Brier skill score versus a coin flip (0 = no skill, 1 = perfect). The empirical baseline "
++        "compares the two teams' past weekly results directly, with no model.")
++    st.dataframe(met, hide_index=True, width="stretch", column_config={
++        c_: st.column_config.NumberColumn(format="%.4f") for c_ in met.columns if c_ != "model"})
++    l, r = st.columns([3, 2])
++    with l:
++        st.plotly_chart(charts.calibration_plot(bt["calibration"]), width="stretch")
++    with r:
++        per_cat = bt["categories"].groupby("category").apply(
++            lambda d: pd.Series({"Brier (model)": np.mean((d.p_model - d.y) ** 2),
++                                 "Brier (baseline)": np.mean((d.p_baseline - d.y) ** 2)}),
++            include_groups=False).reindex(CATEGORY_NAMES)
++        st.caption("Brier score by category (lower is better). Rate stats like STL and BLK are "
++                   "noisier week to week, so expect them to be the hardest to call.")
++        st.dataframe(per_cat, width="stretch",
++                     column_config={k: st.column_config.NumberColumn(format="%.3f") for k in per_cat.columns})
++
++
++WINDOWS = {"Blended (this season shrunk to last)": ("blend", 0), "This season": ("cur", 0),
++           "Last 15 games": ("cur", 15), "Last 30 games": ("cur", 30), "Last season": ("prior", 0)}
++
++
++def window_players(label: str) -> pd.DataFrame:
++    kind, n = WINDOWS[label]
++    if kind == "blend":
++        return blended_players(SEASON)
++    df = load_players(SEASON if kind == "cur" else PRIOR, n)
++    if not df.empty:
++        df = df.assign(GP_TOT=df["GP"])
++    return df
++
++
++def page_values():
++    header("Player values", "9-cat z-scores against the rostered pool")
++    c1, c2, c3 = st.columns([2, 3, 2])
++    window = c1.selectbox("Stat window", list(WINDOWS), index=0)
++    punts = c2.multiselect("Punt categories", CATEGORY_NAMES, help="Removed from the total and from pool selection")
++    show = c3.selectbox("Show", ["All players", "Free agents only", "Rostered only"])
++    players = window_players(window)
++    if players.empty:
++        st.warning("No NBA stats for this window yet (e.g. current season before opening night). "
++                   "Try 'Blended' or 'Last season'.")
++        return
++    res = valuation(players, tuple(punts), META.num_teams, META.roster_size)
++    table = res.table.copy()
++    teams = load_teams(KEY)
++    ros = matched_rosters(KEY, res.table)
++    owner = dict(zip(ros.get("PLAYER_ID", []), ros.get("team_key", []))) if not ros.empty else {}
++    names = dict(zip(teams["team_key"], teams["team_name"]))
++    table["Owner"] = table["PLAYER_ID"].map(owner).map(names).fillna("FA")
++    if show == "Free agents only":
++        table = table[table["Owner"] == "FA"]
++    elif show == "Rostered only":
++        table = table[table["Owner"] != "FA"]
++    q = st.text_input("Search player", "")
++    if q:
++        table = table[table["PLAYER_NAME"].str.contains(q, case=False)]
++    cols = ["rank", "PLAYER_NAME", "TEAM", "Owner", "GP", "MIN", "value", "value_adj", *Z_COLS]
++    if "blend_w" in table:
++        cols.insert(6, "blend_w")
++    cfg = {z: st.column_config.NumberColumn(z.replace("z_", ""), format="%+.2f") for z in Z_COLS}
++    cfg.update({"rank": "Rk", "PLAYER_NAME": "Player", "MIN": st.column_config.NumberColumn(format="%.1f"),
++                "GP": st.column_config.NumberColumn(format="%d"),
++                "value": st.column_config.NumberColumn("Value/gm", format="%.2f",
++                                                       help="Sum of z over non-punted categories"),
++                "value_adj": st.column_config.NumberColumn("Avail-adj", format="%.2f",
++                                                           help="Value × share of team games played"),
++                "blend_w": st.column_config.NumberColumn("Cur wt", format="%.2f",
++                                                         help="Weight on this season vs last (GP/(GP+15))")})
++    st.dataframe(table[[c_ for c_ in cols if c_ in table]], hide_index=True, width="stretch",
++                 height=620, column_config=cfg)
++    st.caption(f"Pool = top {res.pool_size} players ({META.num_teams} teams × {META.roster_size} roster spots). "
++               "FG%/FT% use impact (pct above pool average × attempts), so volume matters. "
++               "Replacement level per category (z): " +
++               ", ".join(f"{k} {v:+.2f}" for k, v in res.replacement.items()))
++
++
++def _roster_picker(label: str, team_key: str, ros: pd.DataFrame, vals: pd.DataFrame, key: str) -> list:
++    if not ros.empty and team_key in set(ros["team_key"]):
++        options = ros[(ros["team_key"] == team_key) & ros["PLAYER_ID"].notna()]
++        mapping = dict(zip(options["PLAYER_ID"], options["name"]))
++    else:
++        top = vals.head(400)
++        mapping = dict(zip(top["PLAYER_ID"], top["PLAYER_NAME"]))
++    return st.multiselect(label, list(mapping), format_func=lambda i: mapping.get(i, str(i)), key=key)
++
++
++def page_trade():
++    header("Trade analyzer", "category-aware, roster-spot-aware")
++    c = core()
++    names, ap = c["names"], c["ap"]
++    keys = list(names)
++    col1, col2 = st.columns(2)
++    me = col1.selectbox("Your team", keys, format_func=names.get)
++    them = col2.selectbox("Trade partner", [k for k in keys if k != me], format_func=names.get)
++    punts = st.multiselect("Your punts", CATEGORY_NAMES, key="trade_punts")
++    res = valuation(c["players"], tuple(punts), META.num_teams, META.roster_size)
++    ros = matched_rosters(KEY, res.table)
++    give = _roster_picker("You give", me, ros, res.table, "give")
++    get = _roster_picker("You get", them, ros, res.table, "get")
++    if not give and not get:
++        st.caption("Pick players on both sides. Rosters load from Yahoo; before the draft you can "
++                   "choose from the top 400 players.")
++        return
++    rates = ap["category_rates"]
++    w_me = trade.context_weights(rates.loc[me] if me in rates.index else None, punts)
++    w_them = trade.context_weights(rates.loc[them] if them in rates.index else None)
++    mine = trade.evaluate_trade(res.table, give, get, res.replacement, w_me)
++    theirs = trade.evaluate_trade(res.table, get, give, res.replacement, w_them)
++    m1, m2, m3 = st.columns(3)
++    m1.metric("Your weighted Δz", f"{mine.weighted_delta:+.2f}", f"raw {mine.raw_delta:+.2f}", delta_color="off")
++    m2.metric(f"{names[them]} weighted Δz", f"{theirs.weighted_delta:+.2f}", f"raw {theirs.raw_delta:+.2f}",
++              delta_color="off")
++    m3.metric("Verdict", mine.verdict.split(":")[0])
++    st.write(mine.verdict)
++    if mine.weighted_delta > 0 and theirs.weighted_delta > 0:
++        st.success("Both sides gain on their own weights: a genuine fit trade, the easiest kind to get accepted.")
++    st.dataframe(mine.table, width="stretch", column_config={
++        k: st.column_config.NumberColumn(format="%+.2f") for k in mine.table.columns})
++    st.caption("Weights: `0.25 + 0.75 × 4p(1−p)` where p is your all-play win rate in the category, so swing "
++               "categories count most and locked/punted ones least. Roster-spot adj prices the extra waiver "
++               "pickup (or forced drop) in uneven trades at replacement level.")
++
++
++def page_streaming():
++    header("Streaming board", "who to add for the rest of this week")
++    c = core()
++    names, tw, model = c["names"], c["tw"], c["model"]
++    me = st.selectbox("Your team", list(names), format_func=names.get)
++    live = tw[tw["week"] == META.current_week]
++    row = live[live["team_key"] == me]
++    punts = st.multiselect("Ignore categories", CATEGORY_NAMES, key="stream_punts")
++    weights = trade.context_weights(None, punts)
++    week_end = TODAY
++    if not row.empty:
++        r = row.iloc[0]
++        opp = live[live["team_key"] == r["opponent_key"]]
++        if not opp.empty:
++            pair = pd.concat([row, opp])
++            sim = mm.live_matchups(model, pair.assign(matchup_id="x"), n_sims=3000)[0]
++            p = sim.cat_prob if sim.team_a == me else 1 - sim.cat_prob
++            weights = trade.context_weights(p, punts, floor=0.1)
++            st.caption(f"vs **{names.get(r['opponent_key'])}** · P(win) {pct(sim.p_win if sim.team_a == me else sim.p_loss)}. "
++                       "Categories are weighted by how contested they still are this week, so a streamer who "
++                       "helps a 50/50 category outranks one who pads a category you've already locked.")
++            st.dataframe(pd.DataFrame({"P(win cat)": p, "weight": weights}).T, width="stretch",
++                         column_config={k: st.column_config.NumberColumn(format="%.2f") for k in CATEGORY_NAMES})
++        if isinstance(r["week_end"], str) and r["week_end"]:
++            week_end = date.fromisoformat(r["week_end"])
++    games_left = nba_data.games_by_team(load_schedule(SEASON), TODAY, week_end)
++    fa = load_free_agents(KEY)
++    if fa.empty or c["vals"] is None:
++        st.info("No free agents or player stats available yet.")
++        return
++    board = trade.streaming_board(fa, c["vals"].table, games_left, weights, c["vals"].replacement)
++    st.dataframe(board.head(40), hide_index=True, width="stretch", height=600, column_config={
++        "name": "Player", "eligible_positions": "Pos", "percent_owned": st.column_config.NumberColumn("% own"),
++        "MIN": st.column_config.NumberColumn(format="%.1f"), "GP": st.column_config.NumberColumn(format="%d"),
++        "games_left": st.column_config.NumberColumn("Games left", help=f"NBA games {TODAY:%b %d}–{week_end:%b %d}"),
++        "value": st.column_config.NumberColumn("Value/gm", format="%.2f"),
++        "weighted_per_game": st.column_config.NumberColumn("Wtd/gm vs repl", format="%+.2f"),
++        "stream_score": st.column_config.ProgressColumn(
++            "Stream score", format="%.2f", min_value=0,
++            max_value=float(max(board["stream_score"].max(), 1e-6)) if not board.empty else 1.0),
++        **{z: st.column_config.NumberColumn(z.replace("z_", ""), format="%+.1f") for z in Z_COLS}})
++
++
++def page_free_agency():
++    header("Free agency", "who works the wire, when, and whether it pays off")
++    c = core()
++    tx = load_transactions(KEY)
++    if tx.empty:
++        st.info("No transactions yet.")
++        return
++    holds = txa.pair_adds_drops(tx)
++    act = txa.team_activity(tx, holds)
++    adds = tx[tx["action"] == "add"]
++    k1, k2, k3, k4 = st.columns(4)
++    k1.metric("Adds this season", f"{len(adds):,}")
++    k2.metric("Most active", act.iloc[0]["team_name"] if not act.empty else "–")
++    k3.metric("Median hold", f"{holds['hold_days'].median():.1f} days" if not holds.empty else "–")
++    k4.metric("Dropped within a week", pct(((holds["hold_days"] <= 7) & holds["dropped"]).mean())
++              if not holds.empty else "–")
++
++    st.subheader("Activity by team")
++    st.dataframe(act.drop(columns="team_key"), hide_index=True, width="stretch", column_config={
++        "team_name": "Team", "add": "Adds", "drop": "Drops", "trade_players": "Players traded",
++        "median_hold_days": st.column_config.NumberColumn("Median hold (days)", format="%.1f"),
++        "stream_rate": st.column_config.ProgressColumn("Stream rate", format="percent", min_value=0, max_value=1,
++                                                       help="Share of adds dropped within 7 days")})
++    l, r = st.columns(2)
++    with l:
++        st.subheader("When moves happen")
++        st.plotly_chart(charts.timing_heatmap(txa.timing_heatmap(tx)), width="stretch")
++    with r:
++        st.subheader("How long pickups last")
++        st.plotly_chart(charts.hold_histogram(holds), width="stretch")
++
++    st.subheader("Does grinding the wire win?")
++    avp = txa.activity_vs_performance(act, c["ap"]["summary"])
++    if avp["n"] > 2:
++        st.plotly_chart(charts.activity_scatter(avp["frame"]), width="stretch")
++        st.caption(f"Spearman ρ = {avp['rho']:+.2f} across {avp['n']} teams. With this few teams, |ρ| needs to "
++                   "be above ~0.63 to be distinguishable from noise at the 5% level, and causality runs both "
++                   "ways (losing teams churn more).")
++    st.subheader("Most-added players")
++    st.dataframe(txa.hot_players(tx, holds), hide_index=True, width="stretch", column_config={
++        "player_id": None, "player_name": "Player", "times_added": "Times added", "distinct_teams": "Teams",
++        "last_added": st.column_config.DatetimeColumn("Last added", format="MMM D, h:mm a"),
++        "median_hold_days": st.column_config.NumberColumn("Median hold (days)", format="%.1f")})
++
++
++def page_compare():
++    header("Player comparison")
++    window = st.selectbox("Stat window", list(WINDOWS), index=0, key="cmp_window")
++    players = window_players(window)
++    if players.empty:
++        st.warning("No stats for this window yet.")
++        return
++    options = players.sort_values("MIN", ascending=False)
++    mapping = dict(zip(options["PLAYER_ID"], options["PLAYER_NAME"]))
++    picks = st.multiselect("Players (2–5)", list(mapping), default=list(mapping)[:2],
++                           format_func=lambda i: mapping[i], max_selections=5)
++    if len(picks) < 2:
++        return
++    sub = players[players["PLAYER_ID"].isin(picks)].copy()
++    sub["FG%"] = sub["FGM"] / sub["FGA"].where(sub["FGA"] > 0)
++    sub["FT%"] = sub["FTM"] / sub["FTA"].where(sub["FTA"] > 0)
++    sub["Headshot"] = sub["PLAYER_ID"].map(
++        lambda i: f"https://cdn.nba.com/headshots/nba/latest/1040x760/{int(i)}.png")
++    res = valuation(players, (), META.num_teams, META.roster_size).table.set_index("PLAYER_ID")
++    for z in Z_COLS + ["value"]:
++        sub[z] = sub["PLAYER_ID"].map(res[z]) if z in res else np.nan
++    cols = ["Headshot", "PLAYER_NAME", "TEAM", "GP", "MIN", "PTS", "REB", "AST", "STL", "BLK", "FG3M", "TOV",
++            "FG%", "FT%", "FGA", "FTA", "value", *Z_COLS]
++    st.dataframe(sub[[c_ for c_ in cols if c_ in sub]], hide_index=True, width="stretch", column_config={
++        "Headshot": st.column_config.ImageColumn("", width="small"), "PLAYER_NAME": "Player",
++        "FG%": st.column_config.NumberColumn(format="%.3f"), "FT%": st.column_config.NumberColumn(format="%.3f"),
++        **{k: st.column_config.NumberColumn(format="%.1f") for k in
++           ("MIN", "PTS", "REB", "AST", "STL", "BLK", "FG3M", "TOV", "FGA", "FTA")},
++        "value": st.column_config.NumberColumn("Value/gm", format="%.2f"),
++        **{z: st.column_config.NumberColumn(z.replace("z_", "z "), format="%+.2f") for z in Z_COLS}})
++    st.caption("Shooting percentages are volume-weighted (total makes ÷ total attempts), not averages of "
++               "per-game percentages.")
++
++
++# ======================================================================== navigation
++st.logo("ryanlogo.png", link="https://rsandan.github.io", size="large")
++nav = st.navigation({
++    "League": [st.Page(page_home, title="This week", icon="🏠", default=True),
++               st.Page(page_power, title="Power rankings", icon="📈"),
++               st.Page(page_matchup_lab, title="Matchup lab", icon="🧪")],
++    "Players": [st.Page(page_values, title="Player values", icon="🧮"),
++                st.Page(page_trade, title="Trade analyzer", icon="🔁"),
++                st.Page(page_streaming, title="Streaming board", icon="📅"),
++                st.Page(page_free_agency, title="Free agency", icon="🗣️"),
++                st.Page(page_compare, title="Player comparison", icon="⛹🏽")],
++})
++nav.run()
++st.caption(f"© {date.today().year} Ryan Sandan · [rsandan.github.io](https://rsandan.github.io)")
+diff --git a/fantasy/__init__.py b/fantasy/__init__.py
+new file mode 100644
+index 0000000..28074b6
+--- /dev/null
++++ b/fantasy/__init__.py
+@@ -0,0 +1 @@
++"""Analytics package for the Love Island (NBA) Yahoo fantasy dashboard."""
+diff --git a/fantasy/categories.py b/fantasy/categories.py
+new file mode 100644
+index 0000000..3ce9762
+--- /dev/null
++++ b/fantasy/categories.py
+@@ -0,0 +1,95 @@
++"""Scoring-category definitions for a standard Yahoo 9-cat H2H league.
++
++Everything downstream (parsing, valuation, simulation) keys off this module so a
++league that swaps a category (e.g. 3PT% for 3PTM, or adds DD) only needs edits here.
++
++Two kinds of category:
++
++* ``count``  - additive per game (PTS, REB, ...). Weekly total = sum of games.
++* ``pct``    - a ratio of two additive components (FGM/FGA). The weekly value is
++               sum(makes) / sum(attempts), never the mean of per-game percentages.
++               Averaging percentages is the most common fantasy-analytics bug and
++               it silently overweights low-volume games.
++"""
++from __future__ import annotations
++
++from dataclasses import dataclass
++
++
++@dataclass(frozen=True)
++class Category:
++    name: str                      # display name, as Yahoo shows it
++    kind: str                      # "count" | "pct"
++    higher_is_better: bool = True
++    stat: str | None = None        # internal column for count stats
++    makes: str | None = None       # internal columns for pct stats
++    attempts: str | None = None
++    decimals: int = 0              # Yahoo's display precision (ties resolve at this precision)
++
++
++CATEGORIES: tuple[Category, ...] = (
++    Category("FG%", "pct", makes="FGM", attempts="FGA", decimals=3),
++    Category("FT%", "pct", makes="FTM", attempts="FTA", decimals=3),
++    Category("3PTM", "count", stat="FG3M"),
++    Category("PTS", "count", stat="PTS"),
++    Category("REB", "count", stat="REB"),
++    Category("AST", "count", stat="AST"),
++    Category("STL", "count", stat="STL"),
++    Category("BLK", "count", stat="BLK"),
++    Category("TO", "count", higher_is_better=False, stat="TOV"),
++)
++
++CATEGORY_NAMES: list[str] = [c.name for c in CATEGORIES]
++BY_NAME: dict[str, Category] = {c.name: c for c in CATEGORIES}
++
++# Additive per-game components. Every category is a function of these, which is what
++# lets us simulate percentages correctly (simulate makes and attempts, then divide).
++COUNT_COLS: list[str] = [c.stat for c in CATEGORIES if c.kind == "count"]
++PCT_PARTS: list[tuple[str, str]] = [(c.makes, c.attempts) for c in CATEGORIES if c.kind == "pct"]
++ADDITIVE_COLS: list[str] = ["FGM", "FGA", "FTM", "FTA", *COUNT_COLS]
++
++# Yahoo NBA stat ids (stable across seasons for the standard game).
++YAHOO_STAT_IDS: dict[str, str] = {
++    "9004003": "FGM/A",
++    "5": "FG%",
++    "9007006": "FTM/A",
++    "8": "FT%",
++    "10": "3PTM",
++    "12": "PTS",
++    "15": "REB",
++    "16": "AST",
++    "17": "STL",
++    "18": "BLK",
++    "19": "TO",
++}
++YAHOO_NAME_TO_COL: dict[str, str] = {
++    "3PTM": "FG3M", "PTS": "PTS", "REB": "REB", "AST": "AST",
++    "STL": "STL", "BLK": "BLK", "TO": "TOV",
++}
++
++
++def category_value(totals: dict, cat: Category) -> float:
++    """Weekly category value from additive totals (dict or pandas row)."""
++    if cat.kind == "pct":
++        att = float(totals[cat.attempts])
++        return float(totals[cat.makes]) / att if att > 0 else float("nan")
++    return float(totals[cat.stat])
++
++
++def compare(a: float, b: float, cat: Category) -> float:
++    """1 if a wins the category, 0 if it loses, 0.5 on a tie (at Yahoo precision).
++
++    A team with zero attempts has an undefined percentage; Yahoo treats that as a
++    loss to any team with a defined value and a tie with another undefined one.
++    """
++    a_nan, b_nan = a != a, b != b  # NaN check without numpy
++    if a_nan and b_nan:
++        return 0.5
++    if a_nan:
++        return 0.0
++    if b_nan:
++        return 1.0
++    a, b = round(a, cat.decimals), round(b, cat.decimals)
++    if a == b:
++        return 0.5
++    return 1.0 if (a > b) == cat.higher_is_better else 0.0
+diff --git a/fantasy/charts.py b/fantasy/charts.py
+new file mode 100644
+index 0000000..e2631d2
+--- /dev/null
++++ b/fantasy/charts.py
+@@ -0,0 +1,125 @@
++"""Plotly figure builders. Palette: validated reference categorical/diverging steps for a
++dark surface (the app runs Streamlit's dark theme). Rules followed: one axis per chart,
++thin marks, recessive grid, diverging scales centred on a neutral gray, text in ink
++colours rather than series colours, hover on every mark."""
++from __future__ import annotations
++
++import numpy as np
++import pandas as pd
++import plotly.graph_objects as go
++
++SURFACE = "#1a1a19"
++INK = "#ffffff"
++INK_2 = "#c3c2b7"
++GRID = "#383835"
++BLUE = "#3987e5"       # categorical slot 1 / diverging positive pole
++ORANGE = "#d95926"     # categorical slot 2
++RED = "#e66767"        # diverging negative pole
++NEUTRAL = "#383835"    # diverging midpoint
++SEQ_BLUE = ["#0d366b", "#184f95", "#256abf", "#3987e5", "#6da7ec", "#9ec5f4"]
++DIVERGING = [[0.0, RED], [0.5, NEUTRAL], [1.0, BLUE]]
++
++
++def _base(fig: go.Figure, height: int = 380) -> go.Figure:
++    fig.update_layout(
++        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
++        font=dict(color=INK_2, size=12), height=height, margin=dict(l=10, r=10, t=30, b=10),
++        hoverlabel=dict(bgcolor=SURFACE, font_color=INK), showlegend=False,
++    )
++    fig.update_xaxes(gridcolor=GRID, zerolinecolor=GRID)
++    fig.update_yaxes(gridcolor=GRID, zerolinecolor=GRID)
++    return fig
++
++
++def luck_bars(df: pd.DataFrame, value_col: str, label_col: str = "team_name") -> go.Figure:
++    d = df.sort_values(value_col)
++    colors = [BLUE if v >= 0 else RED for v in d[value_col]]
++    fig = go.Figure(go.Bar(
++        x=d[value_col], y=d[label_col], orientation="h", marker_color=colors,
++        marker_line_width=0, hovertemplate="%{y}: %{x:+.1%}<extra></extra>"))
++    fig.update_xaxes(tickformat="+.0%", title="Actual win% minus all-play win%")
++    return _base(fig, 40 * len(d) + 60)
++
++
++def category_heatmap(rates: pd.DataFrame, names: dict[str, str]) -> go.Figure:
++    z = rates.values
++    fig = go.Figure(go.Heatmap(
++        z=z, x=list(rates.columns), y=[names.get(i, i) for i in rates.index],
++        colorscale=DIVERGING, zmid=0.5, zmin=0, zmax=1, xgap=2, ygap=2,
++        text=np.vectorize(lambda v: f"{v:.0%}")(z), texttemplate="%{text}",
++        textfont=dict(color=INK, size=11),
++        hovertemplate="%{y} · %{x}: wins %{z:.0%} of all-play category matchups<extra></extra>",
++        colorbar=dict(tickformat=".0%", title="")))
++    return _base(fig, 36 * len(rates) + 80)
++
++
++def probability_bars(df: pd.DataFrame, value_col: str, label_col: str = "team_name",
++                     title: str = "") -> go.Figure:
++    d = df.sort_values(value_col)
++    fig = go.Figure(go.Bar(
++        x=d[value_col], y=d[label_col], orientation="h", marker_color=BLUE, marker_line_width=0,
++        text=[f"{v:.0%}" for v in d[value_col]], textposition="outside", textfont=dict(color=INK_2),
++        hovertemplate="%{y}: %{x:.1%}<extra></extra>"))
++    fig.update_xaxes(range=[0, 1.12], tickformat=".0%", title=title)
++    return _base(fig, 40 * len(d) + 60)
++
++
++def calibration_plot(cal: pd.DataFrame) -> go.Figure:
++    fig = go.Figure()
++    fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", line=dict(color=INK_2, dash="dot", width=1),
++                             hoverinfo="skip", name="Perfect calibration"))
++    fig.add_trace(go.Scatter(
++        x=cal["mean_pred"], y=cal["observed"], mode="lines+markers", line=dict(color=BLUE, width=2),
++        marker=dict(size=9 + 10 * cal["n"] / max(cal["n"].max(), 1), color=BLUE,
++                    line=dict(color=SURFACE, width=2)),
++        customdata=cal["n"], name="Model",
++        hovertemplate="Predicted %{x:.0%} → happened %{y:.0%} (n=%{customdata})<extra></extra>"))
++    fig.update_xaxes(range=[0, 1], tickformat=".0%", title="Predicted category win probability")
++    fig.update_yaxes(range=[0, 1], tickformat=".0%", title="Observed win rate")
++    fig = _base(fig, 420)
++    fig.update_layout(showlegend=True, legend=dict(orientation="h", y=1.08, x=0))
++    return fig
++
++
++def timing_heatmap(grid: pd.DataFrame) -> go.Figure:
++    fig = go.Figure(go.Heatmap(
++        z=grid.values, x=[f"{h:02d}:00" for h in grid.columns], y=list(grid.index),
++        colorscale=[[0, SURFACE], [0.25, "#184f95"], [0.5, "#256abf"], [0.75, BLUE], [1, "#9ec5f4"]],
++        xgap=2, ygap=2, hovertemplate="%{y} %{x}: %{z} adds<extra></extra>", colorbar=dict(title="")))
++    fig.update_xaxes(title="Hour (ET)")
++    fig.update_yaxes(autorange="reversed")  # Monday on top, like a calendar
++    return _base(fig, 300)
++
++
++def activity_scatter(frame: pd.DataFrame) -> go.Figure:
++    fig = go.Figure(go.Scatter(
++        x=frame["add"], y=frame["ap_pct"], mode="markers+text", text=frame["team_name"],
++        textposition="top center", textfont=dict(color=INK_2, size=11),
++        marker=dict(size=11, color=BLUE, line=dict(color=SURFACE, width=2)),
++        hovertemplate="%{text}<br>%{x} adds · all-play %{y:.1%}<extra></extra>"))
++    fig.update_xaxes(title="Players added")
++    fig.update_yaxes(title="All-play win%", tickformat=".0%")
++    return _base(fig, 420)
++
++
++def hold_histogram(holds: pd.DataFrame) -> go.Figure:
++    d = holds[holds["dropped"]]
++    fig = go.Figure(go.Histogram(x=d["hold_days"], xbins=dict(start=0, size=1), marker_color=BLUE,
++                                 marker_line=dict(color=SURFACE, width=2),
++                                 hovertemplate="%{x} days: %{y} pickups<extra></extra>"))
++    fig.update_xaxes(title="Days rostered before being dropped")
++    fig.update_yaxes(title="Pickups")
++    return _base(fig, 320)
++
++
++def category_win_bars(cat_prob: pd.Series, team_a: str, team_b: str) -> go.Figure:
++    """Diverging bars: P(A wins category) - 0.5, so the zero line is a coin flip."""
++    p = cat_prob
++    fig = go.Figure(go.Bar(
++        x=p.values - 0.5, y=list(p.index), orientation="h", base=0.5,
++        marker_color=[BLUE if v >= 0.5 else ORANGE for v in p.values], marker_line_width=0,
++        hovertemplate=[f"{c}: {team_a} {v:.0%} · {team_b} {1 - v:.0%}<extra></extra>"
++                       for c, v in p.items()]))
++    fig.update_xaxes(range=[0, 1], tickformat=".0%", title=f"← {team_b}   ·   {team_a} →")
++    fig.update_yaxes(autorange="reversed")
++    return _base(fig, 320)
+diff --git a/fantasy/data_source.py b/fantasy/data_source.py
+new file mode 100644
+index 0000000..c6d54f8
+--- /dev/null
++++ b/fantasy/data_source.py
+@@ -0,0 +1,82 @@
++"""Uniform data access for the app: live Yahoo + NBA, or the synthetic demo league.
++
++The Streamlit layer wraps these functions in ``st.cache_data`` with TTLs chosen by how
++fast each source changes. Completed weeks never change, so they're cached for the
++life of the process; the live week refreshes every few minutes.
++"""
++from __future__ import annotations
++
++import os
++from dataclasses import dataclass
++from datetime import date, datetime
++
++import pandas as pd
++
++from . import demo, nba_data
++from .yahoo_client import LeagueMeta, YahooLeague, authenticate, discover_league
++
++
++def demo_requested() -> bool:
++    return os.getenv("FANTASY_DEMO", "").strip().lower() in ("1", "true", "yes")
++
++
++@dataclass
++class Source:
++    """Either a live YahooLeague or a pre-generated demo bundle."""
++    live: YahooLeague | None
++    demo_bundle: dict | None
++
++    @property
++    def is_demo(self) -> bool:
++        return self.live is None
++
++    # ---- league
++    def meta(self) -> LeagueMeta:
++        return self.demo_bundle["meta"] if self.is_demo else self.live.meta()
++
++    def teams(self) -> pd.DataFrame:
++        return self.demo_bundle["teams"] if self.is_demo else self.live.teams()
++
++    def week(self, week: int) -> pd.DataFrame:
++        if self.is_demo:
++            tw = self.demo_bundle["team_weeks"]
++            return tw[tw["week"] == week].reset_index(drop=True)
++        return self.live.scoreboard(week)
++
++    def transactions(self) -> pd.DataFrame:
++        return self.demo_bundle["transactions"] if self.is_demo else self.live.transactions()
++
++    def rosters(self, team_keys) -> pd.DataFrame:
++        return self.demo_bundle["rosters"] if self.is_demo else self.live.rosters(team_keys)
++
++    def free_agents(self) -> pd.DataFrame:
++        return self.demo_bundle["free_agents"] if self.is_demo else self.live.free_agents()
++
++    # ---- NBA
++    def players(self, season: str, last_n_games: int = 0) -> pd.DataFrame:
++        if self.is_demo:
++            return self.demo_bundle["players"] if season == nba_data.season_for(self.today()) \
++                else self.demo_bundle["players_prior"]
++        return nba_data.fetch_player_per_game(season, last_n_games)
++
++    def schedule(self, season: str) -> pd.DataFrame:
++        return self.demo_bundle["schedule"] if self.is_demo else nba_data.fetch_schedule(season)
++
++    def today(self) -> date:
++        """League-local 'today'. The demo league is frozen mid-week so every page has data."""
++        if self.is_demo:
++            tw = self.demo_bundle["team_weeks"]
++            live = tw[tw["status"] == "midevent"].iloc[0]
++            return (pd.Timestamp(live["week_start"]) + pd.Timedelta(days=3)).date()
++        return datetime.now(pd.Timestamp.now(tz="America/New_York").tz).date()
++
++
++def connect() -> tuple[Source, str | None]:
++    """Live source if credentials work, otherwise the demo league plus a reason string."""
++    if demo_requested():
++        return Source(None, demo.make_league()), "FANTASY_DEMO is set"
++    try:
++        lg = discover_league(authenticate())
++        return Source(YahooLeague(lg), None), None
++    except Exception as exc:  # missing/expired credentials shouldn't take the site down
++        return Source(None, demo.make_league()), f"{type(exc).__name__}: {exc}"
+diff --git a/fantasy/demo.py b/fantasy/demo.py
+new file mode 100644
+index 0000000..9963a64
+--- /dev/null
++++ b/fantasy/demo.py
+@@ -0,0 +1,292 @@
++"""Synthetic league generator.
++
++Used for (1) the test suite, (2) ``FANTASY_DEMO=1`` so the dashboard runs without
++Yahoo credentials (useful for portfolio visitors when tokens expire), and (3)
++sanity-checking the model: we *know* each synthetic team's true strength, so the
++backtest should beat the baselines and be calibrated.
++
++The generator is deliberately generative rather than i.i.d. noise: each team has
++latent per-game rates, games per week vary with the schedule, counting stats are
++Poisson given games, and makes are Binomial given attempts. That reproduces the
++real structure the model has to deal with (volume-driven correlation, ties in
++low-count categories, percentage noise that shrinks with attempts).
++"""
++from __future__ import annotations
++
++from datetime import date, datetime, timedelta
++
++import numpy as np
++import pandas as pd
++
++from .yahoo_client import TEAM_WEEK_COLUMNS, LeagueMeta
++
++TEAM_NAMES = ["Sam's Swag Team", "Doomenshmirtz Evil Inc.", "Chunch's Challengers", "Han Da Dons",
++              "Tyshiii", "Neal's Fascinating Team", "Driton's Dazzling Team", "ariel's Wonderful Team",
++              "THE REAL MIAMI HEAT", "darius"]
++NBA_TEAMS = ["ATL", "BOS", "BKN", "CHA", "CHI", "CLE", "DAL", "DEN", "DET", "GSW", "HOU", "IND", "LAC",
++             "LAL", "MEM", "MIA", "MIL", "MIN", "NOP", "NYK", "OKC", "ORL", "PHI", "PHX", "POR", "SAC",
++             "SAS", "TOR", "UTA", "WAS"]
++YAHOO_ABBR = {"GSW": "GS", "NOP": "NO", "NYK": "NY", "SAS": "SA", "PHX": "PHO"}
++FIRST = ["Jalen", "Tyrese", "Anthony", "Devin", "Jaylen", "Scottie", "Paolo", "Evan", "Cade", "Darius",
++         "Franz", "Alperen", "Victor", "Chet", "Amen", "Jamal", "Tyler", "Mikal", "Dejounte", "Nikola",
++         "Luka", "Jayson", "Donovan", "Trae", "Zion", "Brandon", "De'Aaron", "Kawhi", "Jimmy", "Domantas"]
++LAST = ["Brunson", "Maxey", "Edwards", "Booker", "Brown", "Barnes", "Banchero", "Mobley", "Cunningham",
++        "Garland", "Wagner", "Sengun", "Wembanyama", "Holmgren", "Thompson", "Murray", "Herro", "Bridges",
++        "Jokic", "Doncic", "Tatum", "Mitchell", "Young", "Williamson", "Miller", "Fox", "Leonard", "Butler",
++        "Sabonis", "Ingram"]
++
++LEAGUE_PREFIX = "466.l.99999"
++
++
++def _team_keys(n=10):
++    return [f"{LEAGUE_PREFIX}.t.{i}" for i in range(1, n + 1)]
++
++
++def _latent_rates(rng, n):
++    """Per player-game latent rates with archetypes (e.g. big-man builds punt FT%)."""
++    base = dict(FGA=8.4, FGP=0.475, FTA=2.4, FTP=0.785, FG3M=1.35, PTS=11.8, REB=4.6, AST=2.8,
++                STL=0.85, BLK=0.55, TOV=1.45)
++    rows = []
++    for i in range(n):
++        big = rng.uniform(-1, 1)          # + = bigs (REB/BLK/FG%), - = guards (AST/3PTM/FT%)
++        vol = rng.normal(0, 0.06)         # overall quality
++        r = {k: v * (1 + vol) for k, v in base.items()}
++        r["REB"] *= 1 + 0.14 * big
++        r["BLK"] *= 1 + 0.30 * big
++        r["FGP"] = base["FGP"] + 0.018 * big + rng.normal(0, 0.006)
++        r["FTP"] = base["FTP"] - 0.035 * big + rng.normal(0, 0.01)
++        r["AST"] *= 1 - 0.18 * big
++        r["FG3M"] *= 1 - 0.22 * big
++        r["STL"] *= 1 + rng.normal(0, 0.06)
++        r["TOV"] *= 1 - 0.08 * big + rng.normal(0, 0.05)
++        r["PTS"] = r["FGA"] * r["FGP"] * 2 + r["FG3M"] + r["FTA"] * r["FTP"]
++        rows.append(r)
++    return pd.DataFrame(rows)
++
++
++def _latent_from_rosters(rng, rosters, players, keys):
++    """Team per-game rates implied by the roster, rescaled to Yahoo's started-game level."""
++    from .matchup_model import COMPONENTS, roster_priors
++    base = pd.Series(dict(FGA=8.4, FGP=0.475, FTA=2.4, FTP=0.785, FG3M=1.35, PTS=11.8, REB=4.6,
++                          AST=2.8, STL=0.85, BLK=0.55, TOV=1.45))
++    from .nba_data import normalize_name
++    ros = rosters.assign(name_key=rosters["name"].map(normalize_name)).merge(
++        players[["name_key", "PLAYER_ID"]], on="name_key", how="left")
++    pri = roster_priors(ros, players.assign(availability=players["GP"] / 82))
++    if pri.empty:
++        latent = _latent_rates(rng, len(keys))
++        latent.index = keys
++        return latent
++    latent = pri.reindex(keys).fillna(pri.mean())[COMPONENTS] * (base / pri.mean())[COMPONENTS]
++    latent = latent * rng.normal(1, 0.02, latent.shape)       # coaching/streaming skill not in the roster
++    latent["PTS"] = 2 * latent["FGA"] * latent["FGP"] + latent["FG3M"] + latent["FTA"] * latent["FTP"]
++    return latent
++
++
++def _week_totals(rng, rates: pd.Series, games: int) -> dict:
++    fga = rng.poisson(rates["FGA"] * games)
++    fta = rng.poisson(rates["FTA"] * games)
++    fgm = rng.binomial(fga, np.clip(rates["FGP"], 0, 1))
++    ftm = rng.binomial(fta, np.clip(rates["FTP"], 0, 1))
++    fg3m = min(rng.poisson(rates["FG3M"] * games), fgm)
++    return dict(FGM=float(fgm), FGA=float(fga), FTM=float(ftm), FTA=float(fta), FG3M=float(fg3m),
++                PTS=float(2 * fgm + fg3m + ftm), REB=float(rng.poisson(rates["REB"] * games)),
++                AST=float(rng.poisson(rates["AST"] * games)), STL=float(rng.poisson(rates["STL"] * games)),
++                BLK=float(rng.poisson(rates["BLK"] * games)), TOV=float(rng.poisson(rates["TOV"] * games)))
++
++
++def _round_robin(teams: list[str], weeks: int) -> dict[int, list[tuple[str, str]]]:
++    t = list(teams)
++    out = {}
++    for w in range(1, weeks + 1):
++        out[w] = [(t[i], t[-1 - i]) for i in range(len(t) // 2)]
++        t = [t[0]] + [t[-1]] + t[1:-1]
++    return out
++
++
++def make_league(seed: int = 42, n_teams: int = 10, completed_weeks: int = 9, total_weeks: int = 20,
++                current_progress: float = 0.55):
++    """Return a dict with everything the app needs, in the same schemas as the live path."""
++    rng = np.random.default_rng(seed)
++    keys = _team_keys(n_teams)
++    names = dict(zip(keys, TEAM_NAMES[:n_teams]))
++    # Rosters first, then derive each team's true strength from its roster so every page
++    # (roster priors, valuations, results) tells one consistent story.
++    players_cur, players_prior = make_players(rng)
++    rosters, free_agents = _rosters(rng, players_cur, keys)
++    latent = _latent_from_rosters(rng, rosters, players_prior, keys)
++    schedule = _round_robin(keys, total_weeks)
++    season_start = date(2026, 10, 19)
++
++    rows = []
++    for w, pairs in schedule.items():
++        ws, we = season_start + timedelta(days=7 * (w - 1)), season_start + timedelta(days=7 * w - 1)
++        status = ("postevent" if w <= completed_weeks else
++                  "midevent" if w == completed_weeks + 1 else "preevent")
++        for mi, (a, b) in enumerate(pairs):
++            for team, opp in ((a, b), (b, a)):
++                sched_games = int(rng.integers(27, 38))
++                if status == "postevent":
++                    played, remaining = sched_games, 0
++                elif status == "midevent":
++                    played = int(round(sched_games * current_progress))
++                    remaining = sched_games - played
++                else:
++                    played, remaining = 0, sched_games
++                totals = _week_totals(rng, latent.loc[team], played) if played else dict.fromkeys(
++                    ["FGM", "FGA", "FTM", "FTA", "FG3M", "PTS", "REB", "AST", "STL", "BLK", "TOV"], 0.0)
++                rows.append(dict(week=w, matchup_id=f"{w}-{mi}", team_key=team, team_name=names[team],
++                                 opponent_key=opp, status=status, is_playoffs=False, is_consolation=False,
++                                 week_start=ws.isoformat(), week_end=we.isoformat(), games=float(played),
++                                 live_games=0.0, remaining_games=float(remaining), **totals,
++                                 **{"FG%": totals["FGM"] / totals["FGA"] if totals["FGA"] else np.nan,
++                                    "FT%": totals["FTM"] / totals["FTA"] if totals["FTA"] else np.nan}))
++    team_weeks = pd.DataFrame(rows)[TEAM_WEEK_COLUMNS]
++
++    current_week = completed_weeks + 1
++    meta = LeagueMeta(league_key=LEAGUE_PREFIX, name="Season 3 of Love Island (NBA) [demo]",
++                      season="2026", scoring_type="head", num_teams=n_teams, current_week=current_week,
++                      start_week=1, end_week=total_weeks + 3, playoff_start_week=total_weeks + 1,
++                      num_playoff_teams=6, roster_size=13)
++    teams = pd.DataFrame({"team_key": keys, "team_name": [names[k] for k in keys], "logo_url": None,
++                          "manager": [n.split("'")[0] for n in names.values()], "moves": 0, "trades": 0})
++
++    tx = make_transactions(rng, keys, names, players_cur, season_start, completed_weeks)
++    nba_sched = make_nba_schedule(rng, season_start, total_weeks)
++    return dict(meta=meta, teams=teams, team_weeks=team_weeks, latent=latent, players=players_cur,
++                players_prior=players_prior, rosters=rosters, free_agents=free_agents,
++                transactions=tx, schedule=nba_sched)
++
++
++def make_players(rng, n=420):
++    """Current (partial) and prior-season per-game lines for a synthetic player universe."""
++    names = {f"{FIRST[i % len(FIRST)]} {LAST[(i * 7 + i // len(FIRST)) % len(LAST)]}"
++             + ("" if i < 300 else " Jr.") for i in range(n)}
++    names = sorted(names)[:n]
++    q = np.sort(rng.gamma(2.2, 1.0, len(names)))[::-1]          # talent: few stars, long tail
++    q = q / q.max()
++    big = rng.uniform(-1, 1, len(names))
++    minutes = np.clip(10 + 26 * q + rng.normal(0, 3, len(names)), 6, 38)
++
++    def line(minutes, noise):
++        m = minutes / 36
++        fga = np.clip(m * (9 + 12 * q) * (1 + rng.normal(0, noise, len(q))), 0.5, None)
++        fgp = np.clip(0.455 + 0.05 * big + rng.normal(0, 0.02 + noise / 4, len(q)), 0.35, 0.68)
++        fta = np.clip(m * (1.5 + 5.5 * q) * (1 + rng.normal(0, noise, len(q))), 0.1, None)
++        ftp = np.clip(0.78 - 0.08 * big + rng.normal(0, 0.04 + noise / 3, len(q)), 0.45, 0.94)
++        fg3m = np.clip(m * (1.2 + 2 * q) * (1 - 0.6 * big) * (1 + rng.normal(0, noise, len(q))), 0, None)
++        fgm, ftm = fga * fgp, fta * ftp
++        return pd.DataFrame({
++            "MIN": minutes, "FGM": fgm, "FGA": fga, "FTM": ftm, "FTA": fta, "FG3M": np.minimum(fg3m, fgm),
++            "PTS": 2 * fgm + np.minimum(fg3m, fgm) + ftm,
++            "REB": np.clip(m * (4 + 4 * q) * (1 + 0.55 * big) * (1 + rng.normal(0, noise, len(q))), 0, None),
++            "AST": np.clip(m * (2 + 5 * q) * (1 - 0.5 * big) * (1 + rng.normal(0, noise, len(q))), 0, None),
++            "STL": np.clip(m * (0.7 + 0.6 * q) * (1 + rng.normal(0, noise * 1.5, len(q))), 0, None),
++            "BLK": np.clip(m * (0.3 + 0.6 * q) * (1 + 1.1 * big) * (1 + rng.normal(0, noise * 1.5, len(q))), 0, None),
++            "TOV": np.clip(m * (1 + 2 * q) * (1 + rng.normal(0, noise, len(q))), 0.1, None),
++        })
++
++    ids = np.arange(1_630_000, 1_630_000 + len(names))
++    team = rng.choice(NBA_TEAMS, len(names))
++    prior = line(minutes, 0.08)
++    prior.insert(0, "GP", rng.integers(45, 83, len(names)).astype(float))
++    cur = line(minutes * rng.normal(1, 0.05, len(names)), 0.2)   # small samples are noisier
++    cur.insert(0, "GP", rng.integers(0, 12, len(names)).astype(float))
++    from .nba_data import normalize_name
++    frames = []
++    for df in (cur, prior):
++        df.insert(0, "TEAM", team)
++        df.insert(0, "PLAYER_NAME", names)
++        df.insert(0, "PLAYER_ID", ids)
++        df["name_key"] = df["PLAYER_NAME"].map(normalize_name)
++        frames.append(df)
++    cur = frames[0][frames[0]["GP"] > 0].reset_index(drop=True)
++    return cur, frames[1]
++
++
++def _rosters(rng, players, keys, size=13):
++    order = players.sort_values("MIN", ascending=False)
++    taken = order.head(len(keys) * size).sample(frac=1, random_state=int(rng.integers(1e9)))
++    rows = []
++    for i, (_, p) in enumerate(taken.iterrows()):
++        rows.append({"player_id": int(p["PLAYER_ID"]) % 100000, "name": p["PLAYER_NAME"],
++                     "editorial_team_abbr": YAHOO_ABBR.get(p["TEAM"], p["TEAM"]),
++                     "eligible_positions": ["PG", "SG", "SF", "PF", "C"][i % 5], "status": "",
++                     "team_key": keys[i % len(keys)]})
++    rosters = pd.DataFrame(rows)
++    fa = order.iloc[len(keys) * size: len(keys) * size + 150]
++    free = pd.DataFrame({"player_id": fa["PLAYER_ID"].astype(int) % 100000, "name": fa["PLAYER_NAME"],
++                         "editorial_team_abbr": fa["TEAM"].map(lambda t: YAHOO_ABBR.get(t, t)),
++                         "eligible_positions": "G,F", "status": "",
++                         "percent_owned": rng.integers(0, 40, len(fa))})
++    return rosters, free
++
++
++def make_transactions(rng, keys, names, players, season_start, weeks):
++    tz = "America/New_York"
++    activity = rng.gamma(1.5, 1.0, len(keys))                       # some managers grind the wire
++    pool = players.sort_values("MIN", ascending=False).iloc[100:260]
++    rows, tid = [], 1
++    for ti, key in enumerate(keys):
++        n = int(activity[ti] * weeks * 1.4)
++        for _ in range(n):
++            p = pool.sample(1, random_state=int(rng.integers(1e9))).iloc[0]
++            day = season_start + timedelta(days=int(rng.integers(0, weeks * 7)))
++            hour = int(rng.choice([9, 10, 12, 18, 19, 20, 21, 22, 23], p=[.08, .08, .12, .1, .14, .16, .14, .1, .08]))
++            ts = pd.Timestamp(datetime(day.year, day.month, day.day, hour), tz=tz)
++            base = dict(transaction_id=str(tid), transaction_type="add/drop", status="successful",
++                        team_key=key, team_name=names[key], source_type="freeagents")
++            rows.append({**base, "timestamp": ts, "action": "add", "player_id": int(p["PLAYER_ID"]) % 100000,
++                         "player_name": p["PLAYER_NAME"], "nba_team": p["TEAM"]})
++            if rng.random() < 0.7:                                    # most adds are streams
++                hold = float(rng.exponential(5))
++                rows.append({**base, "timestamp": ts + pd.Timedelta(days=hold), "action": "drop",
++                             "player_id": int(p["PLAYER_ID"]) % 100000, "player_name": p["PLAYER_NAME"],
++                             "nba_team": p["TEAM"], "transaction_id": str(tid + 100000)})
++            tid += 1
++    df = pd.DataFrame(rows)
++    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(tz)
++    return df.sort_values("timestamp").reset_index(drop=True)
++
++
++def make_nba_schedule(rng, season_start, weeks):
++    rows = []
++    for d in range(weeks * 7):
++        day = season_start + timedelta(days=d)
++        teams = list(rng.permutation(NBA_TEAMS))
++        n_games = int(rng.integers(3, 12))
++        for g in range(n_games):
++            rows.append({"game_date": day, "home": teams[2 * g], "away": teams[2 * g + 1]})
++    return pd.DataFrame(rows)
++
++
++def to_yahoo_scoreboard(week_rows: pd.DataFrame) -> dict:
++    """Serialise team-week rows back into Yahoo's scoreboard JSON shape (test fixture)."""
++    stat = lambda sid, v: {"stat": {"coverage_type": "week", "stat_id": sid, "value": v}}
++    matchups = {}
++    for i, (mid, grp) in enumerate(week_rows.groupby("matchup_id", sort=False)):
++        teams = {}
++        for j, (_, r) in enumerate(grp.iterrows()):
++            pct = lambda m, a: "" if a == 0 else f"{m / a:.3f}".lstrip("0")
++            teams[str(j)] = {"team": [
++                [{"team_key": r["team_key"]}, {"team_id": r["team_key"].split(".")[-1]}, {"name": r["team_name"]}],
++                {"team_stats": {"coverage_type": "week", "week": str(r["week"]), "stats": [
++                    stat("9004003", f"{int(r['FGM'])}/{int(r['FGA'])}"), stat("5", pct(r["FGM"], r["FGA"])),
++                    stat("9007006", f"{int(r['FTM'])}/{int(r['FTA'])}"), stat("8", pct(r["FTM"], r["FTA"])),
++                    stat("10", str(int(r["FG3M"]))), stat("12", str(int(r["PTS"]))), stat("15", str(int(r["REB"]))),
++                    stat("16", str(int(r["AST"]))), stat("17", str(int(r["STL"]))), stat("18", str(int(r["BLK"]))),
++                    stat("19", str(int(r["TOV"])))]}},
++                {"team_remaining_games": {"coverage_type": "week", "week": str(r["week"]), "total": {
++                    "remaining_games": int(r["remaining_games"]), "live_games": int(r["live_games"]),
++                    "completed_games": int(r["games"])}}},
++            ]}
++        teams["count"] = len(grp)
++        first = grp.iloc[0]
++        matchups[str(i)] = {"matchup": {
++            "week": str(first["week"]), "week_start": first["week_start"], "week_end": first["week_end"],
++            "status": first["status"], "is_playoffs": "0", "is_consolation": "0",
++            "0": {"teams": teams}}}
++    matchups["count"] = len(matchups)
++    return {"fantasy_content": {"league": [{"league_key": LEAGUE_PREFIX},
++                                           {"scoreboard": {"week": str(week_rows["week"].iloc[0]),
++                                                           "0": {"matchups": matchups}}}]}}
+diff --git a/fantasy/matchup_model.py b/fantasy/matchup_model.py
+new file mode 100644
+index 0000000..94d0f8e
+--- /dev/null
++++ b/fantasy/matchup_model.py
+@@ -0,0 +1,417 @@
++"""Team-strength model and Monte Carlo matchup simulator for H2H categories.
++
++Model
++-----
++Each team-week is summarised as a vector of **per player-game rates** over 11 additive
++components::
++
++    FGA, FG%, FTA, FT%, 3PTM, PTS, REB, AST, STL, BLK, TO     (per game started)
++
++Working per game (Yahoo's ``completed_games``) instead of per week matters: weekly
++totals swing mostly with how many games a team gets (schedule, injuries, streaming),
++and games are *known in advance* from the schedule. Rates isolate roster quality;
++games are plugged back in at projection time.
++
++Team mean rates
++    Recency-weighted average of the team's weekly rates (half-life ``half_life`` weeks)
++    shrunk toward a prior with strength ``prior_weeks`` (empirical-Bayes /
++    credibility weighting). The prior is the league average, or a roster-based
++    projection if supplied, which is what makes week-1 predictions sensible.
++
++Week-to-week noise
++    Residuals from each team's own mean, pooled across the league, give an 11x11
++    covariance. Categories are correlated (a big-volume week lifts PTS, 3PTM, FGA and
++    TO together; a hot shooting week lifts FG% and PTS), and ignoring that
++    overstates how often a team sweeps or gets swept. The covariance is estimated on
++    rates rescaled by ``sqrt(games / G_ref)`` because the variance of a per-game average
++    shrinks with the number of games; at projection time it is scaled back by
++    ``G_ref / games_remaining``. Off-diagonals are shrunk 30% toward zero (a simple
++    Ledoit-Wolf-style regulariser) because 10 teams x a few weeks is a small sample.
++
++Simulation
++    For the remaining games of each team, draw rates from N(mu, Sigma * G_ref / n),
++    convert to totals (makes = attempts x pct, so percentages aggregate correctly),
++    add what is already banked this week, round to integers / Yahoo's 3-decimal
++    display precision (ties are real in STL/BLK), and score categories.
++"""
++from __future__ import annotations
++
++from dataclasses import dataclass, field
++
++import numpy as np
++import pandas as pd
++
++import zlib
++
++from .categories import CATEGORIES, CATEGORY_NAMES, compare
++
++COMPONENTS = ["FGA", "FGP", "FTA", "FTP", "FG3M", "PTS", "REB", "AST", "STL", "BLK", "TOV"]
++PCT_COMPONENTS = {"FGP": ("FGM", "FGA"), "FTP": ("FTM", "FTA")}
++_IDX = {c: i for i, c in enumerate(COMPONENTS)}
++# Weakly-informative fallback noise (coefficient of variation per component) used only
++# when there are too few completed weeks to estimate a covariance (preseason / week 1).
++_FALLBACK_CV = {"FGA": 0.08, "FGP": 0.05, "FTA": 0.15, "FTP": 0.07, "FG3M": 0.15, "PTS": 0.08,
++                "REB": 0.08, "AST": 0.10, "STL": 0.18, "BLK": 0.25, "TOV": 0.12}
++
++
++def team_week_rates(tw: pd.DataFrame) -> pd.DataFrame:
++    """Per-game component rates for team-weeks with at least one game played."""
++    df = tw[tw["games"].fillna(0) > 0].copy()
++    g = df["games"]
++    out = pd.DataFrame({"team_key": df["team_key"], "week": df["week"], "games": g})
++    for c in ("FGA", "FTA", "FG3M", "PTS", "REB", "AST", "STL", "BLK", "TOV"):
++        out[c] = df[c] / g
++    out["FGP"] = np.where(df["FGA"] > 0, df["FGM"] / df["FGA"].where(df["FGA"] > 0, 1), np.nan)
++    out["FTP"] = np.where(df["FTA"] > 0, df["FTM"] / df["FTA"].where(df["FTA"] > 0, 1), np.nan)
++    out[["FGP", "FTP"]] = out[["FGP", "FTP"]].fillna(out[["FGP", "FTP"]].mean())
++    return out.reset_index(drop=True)
++
++
++@dataclass
++class TeamModel:
++    mu: pd.DataFrame                       # team_key x COMPONENTS
++    cov: np.ndarray                        # K x K covariance at G_ref games
++    g_ref: float                           # reference games per week
++    games_per_week: pd.Series              # typical games per week, by team
++    league_mean: pd.Series
++    n_weeks: int = 0
++    diagnostics: dict = field(default_factory=dict)
++    n_eff: pd.Series | None = None         # recency-weighted weeks of evidence, by team
++    prior_weeks: float = 3.0
++
++    def mean_uncertainty_scale(self, team: str) -> float:
++        """Posterior variance of a team's mean rate, as a multiple of the weekly covariance
++        (at G_ref games): ``1 / (evidence weeks + prior weeks)``."""
++        n = float(self.n_eff.get(team, 0.0)) if self.n_eff is not None else 0.0
++        return 1.0 / (n + self.prior_weeks)
++
++    def teams(self) -> list[str]:
++        return list(self.mu.index)
++
++
++def fit_team_model(
++    history: pd.DataFrame,
++    teams: list[str] | None = None,
++    half_life: float = 6.0,
++    prior_weeks: float = 3.0,
++    cov_shrink: float = 0.3,
++    priors: pd.DataFrame | None = None,
++) -> TeamModel:
++    """Fit on completed team-weeks (``status == 'postevent'``)."""
++    hist = history[history["status"] == "postevent"] if "status" in history else history
++    rates = team_week_rates(hist)
++    teams = list(teams) if teams is not None else sorted(history["team_key"].dropna().unique())
++
++    if rates.empty:
++        # Preseason: no league history. Fall back to priors or a neutral generic team.
++        base = (priors.mean() if priors is not None and not priors.empty
++                else pd.Series({"FGA": 8.4, "FGP": 0.475, "FTA": 2.4, "FTP": 0.785, "FG3M": 1.4,
++                                "PTS": 11.8, "REB": 4.6, "AST": 2.8, "STL": 0.85, "BLK": 0.55,
++                                "TOV": 1.45}))
++        mu = pd.DataFrame([priors.loc[t] if priors is not None and t in priors.index else base
++                           for t in teams], index=teams)[COMPONENTS]
++        sd = np.array([base[c] * _FALLBACK_CV[c] for c in COMPONENTS])
++        return TeamModel(mu, np.diag(sd ** 2), 32.0, pd.Series(32.0, index=teams), base[COMPONENTS],
++                         0, {"cov_source": "fallback"}, pd.Series(0.0, index=teams), prior_weeks)
++
++    last_week = rates["week"].max()
++    rates["w"] = 0.5 ** ((last_week - rates["week"]) / half_life)
++    g_ref = float(rates["games"].median())
++    league_mean = pd.Series(np.average(rates[COMPONENTS], axis=0, weights=rates["w"]), index=COMPONENTS)
++    if priors is not None and not priors.empty:
++        # Roster projections are per *rostered* player-game; Yahoo rates are per *started*
++        # player-game (benches and rest days differ). Rescale so the priors' league mean
++        # matches the observed league mean and only the between-team differences carry over.
++        priors = priors[COMPONENTS] * (league_mean / priors[COMPONENTS].mean())
++
++    mu_rows, resid, n_eff = {}, [], {}
++    for t in teams:
++        r = rates[rates["team_key"] == t]
++        prior = priors.loc[t][COMPONENTS] if priors is not None and t in priors.index else league_mean
++        if r.empty:
++            mu_rows[t] = prior
++            continue
++        wsum = r["w"].sum()
++        n_eff[t] = float(wsum)
++        xbar = pd.Series(np.average(r[COMPONENTS], axis=0, weights=r["w"]), index=COMPONENTS)
++        mu_rows[t] = (wsum * xbar + prior_weeks * prior) / (wsum + prior_weeks)
++        if len(r) >= 2:
++            raw_mean = r[COMPONENTS].mean()
++            scale = np.sqrt(r["games"].values / g_ref)[:, None]
++            e = (r[COMPONENTS].values - raw_mean.values) * scale
++            resid.append(e * np.sqrt(len(r) / (len(r) - 1)))  # small-sample dof correction
++    mu = pd.DataFrame(mu_rows).T[COMPONENTS]
++
++    K = len(COMPONENTS)
++    n_resid = sum(len(e) for e in resid)
++    if n_resid >= 2 * K:
++        E = np.vstack(resid)
++        cov = E.T @ E / n_resid
++        cov = (1 - cov_shrink) * cov + cov_shrink * np.diag(np.diag(cov))
++        source = f"pooled residuals (n={n_resid})"
++    else:
++        cov = np.diag([(league_mean[c] * _FALLBACK_CV[c]) ** 2 for c in COMPONENTS])
++        source = "fallback (too few weeks for covariance)"
++    cov = cov + np.eye(K) * 1e-9  # guarantee positive-definite for Cholesky
++
++    gpw = hist.groupby("team_key")["games"].median().reindex(teams).fillna(g_ref)
++    return TeamModel(mu, cov, g_ref, gpw, league_mean, int(rates["week"].nunique()),
++                     {"cov_source": source, "half_life": half_life, "prior_weeks": prior_weeks},
++                     pd.Series(n_eff).reindex(teams).fillna(0.0), prior_weeks)
++
++
++def perturbed(model: TeamModel, rng: np.random.Generator) -> TeamModel:
++    """One posterior draw of every team's mean rates (for season-long simulations, where
++    a team's true strength must stay fixed across all of its simulated weeks)."""
++    L = np.linalg.cholesky(model.cov)
++    mu = model.mu.copy()
++    for t in mu.index:
++        shift = L @ rng.standard_normal(len(COMPONENTS)) * np.sqrt(model.mean_uncertainty_scale(t))
++        mu.loc[t] = mu.loc[t].values + shift
++    mu[["FGP", "FTP"]] = mu[["FGP", "FTP"]].clip(0, 1)
++    out = TeamModel(mu, model.cov, model.g_ref, model.games_per_week, model.league_mean,
++                    model.n_weeks, model.diagnostics, model.n_eff, model.prior_weeks)
++    out.n_eff = pd.Series(1e9, index=mu.index)  # strength already drawn: no extra mean noise
++    return out
++
++
++# -------------------------------------------------------------------- simulation
++def _simulate_totals(model: TeamModel, team: str, current: dict, n_rem: float,
++                     n_sims: int, rng: np.random.Generator) -> dict[str, np.ndarray]:
++    """Simulated end-of-week additive totals for one team."""
++    cur = {k: float(current.get(k, 0.0) or 0.0) for k in
++           ("FGM", "FGA", "FTM", "FTA", "FG3M", "PTS", "REB", "AST", "STL", "BLK", "TOV")}
++    out = {k: np.full(n_sims, v) for k, v in cur.items()}
++    if n_rem and n_rem > 0:
++        # Two noise sources, same covariance shape: week-to-week variation of a per-game
++        # average over n_rem games, plus uncertainty about the team's true mean. Omitting
++        # the second makes early-season probabilities overconfident.
++        scale = model.g_ref / n_rem + model.mean_uncertainty_scale(team)
++        L = np.linalg.cholesky(model.cov * scale)
++        draws = rng.standard_normal((n_sims, len(COMPONENTS))) @ L.T + model.mu.loc[team].values
++        d = {c: draws[:, _IDX[c]] for c in COMPONENTS}
++        fga = np.rint(np.clip(d["FGA"], 0, None) * n_rem)
++        fta = np.rint(np.clip(d["FTA"], 0, None) * n_rem)
++        out["FGA"] += fga
++        out["FTA"] += fta
++        out["FGM"] += np.rint(fga * np.clip(d["FGP"], 0, 1))
++        out["FTM"] += np.rint(fta * np.clip(d["FTP"], 0, 1))
++        for c in ("FG3M", "PTS", "REB", "AST", "STL", "BLK", "TOV"):
++            out[c] += np.rint(np.clip(d[c], 0, None) * n_rem)
++    return out
++
++
++def _category_arrays(t: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
++    vals = {}
++    for cat in CATEGORIES:
++        if cat.kind == "pct":
++            att = t[cat.attempts]
++            with np.errstate(invalid="ignore", divide="ignore"):
++                vals[cat.name] = np.round(np.where(att > 0, t[cat.makes] / att, np.nan), cat.decimals)
++        else:
++            vals[cat.name] = t[cat.stat]
++    return vals
++
++
++def _compare_arrays(a: np.ndarray, b: np.ndarray, higher_is_better: bool) -> np.ndarray:
++    an, bn = np.isnan(a), np.isnan(b)
++    a0, b0 = np.nan_to_num(a), np.nan_to_num(b)
++    win = (a0 > b0) if higher_is_better else (a0 < b0)
++    res = np.where(a0 == b0, 0.5, win.astype(float))
++    res = np.where(an & ~bn, 0.0, res)
++    res = np.where(bn & ~an, 1.0, res)
++    return np.where(an & bn, 0.5, res)
++
++
++@dataclass
++class MatchupSim:
++    team_a: str
++    team_b: str
++    cat_prob: pd.Series            # P(team A wins category), ties count half
++    proj_a: pd.Series              # median projected category values
++    proj_b: pd.Series
++    p_win: float
++    p_tie: float
++    p_loss: float
++    exp_cats_a: float
++    cats_a: np.ndarray             # per-simulation categories won by A (ties excluded)
++    cats_b: np.ndarray
++    ties: np.ndarray
++
++
++def simulate_matchup(model: TeamModel, team_a: str, team_b: str,
++                     current_a: dict | None = None, current_b: dict | None = None,
++                     games_a: float | None = None, games_b: float | None = None,
++                     n_sims: int = 4000, seed: int | None = 0) -> MatchupSim:
++    """Distribution of a (possibly in-progress) H2H category matchup.
++
++    ``games_*`` are games *remaining*; default is each team's typical games per week
++    (a full, not-yet-started week). ``current_*`` are totals already banked.
++    """
++    rng = np.random.default_rng(seed)
++    ga = model.games_per_week.get(team_a, model.g_ref) if games_a is None else games_a
++    gb = model.games_per_week.get(team_b, model.g_ref) if games_b is None else games_b
++    ta = _category_arrays(_simulate_totals(model, team_a, current_a or {}, ga, n_sims, rng))
++    tb = _category_arrays(_simulate_totals(model, team_b, current_b or {}, gb, n_sims, rng))
++    res = {c.name: _compare_arrays(ta[c.name], tb[c.name], c.higher_is_better) for c in CATEGORIES}
++    R = np.column_stack([res[c] for c in CATEGORY_NAMES])
++    cats_a = (R == 1).sum(1)
++    cats_b = (R == 0).sum(1)
++    ties = (R == 0.5).sum(1)
++    return MatchupSim(
++        team_a, team_b,
++        pd.Series({c: res[c].mean() for c in CATEGORY_NAMES}),
++        pd.Series({c: np.nanmedian(ta[c]) for c in CATEGORY_NAMES}),
++        pd.Series({c: np.nanmedian(tb[c]) for c in CATEGORY_NAMES}),
++        float((cats_a > cats_b).mean()), float((cats_a == cats_b).mean()),
++        float((cats_a < cats_b).mean()), float((cats_a + 0.5 * ties).mean()),
++        cats_a, cats_b, ties,
++    )
++
++
++def live_matchups(model: TeamModel, week_rows: pd.DataFrame, n_sims: int = 4000) -> list[MatchupSim]:
++    """Simulate every matchup in a scoreboard week using banked totals + games remaining."""
++    sims = []
++    for _, grp in week_rows.groupby("matchup_id", sort=False):
++        if len(grp) != 2:
++            continue
++        a, b = grp.iloc[0], grp.iloc[1]
++        started = a["status"] != "preevent"
++        # Yahoo's remaining_games is the schedule-aware count of roster games left, which
++        # is exactly the exposure we want (valid pre-week too). Fall back to typical games.
++        rem_a = a["remaining_games"] if pd.notna(a["remaining_games"]) else None
++        rem_b = b["remaining_games"] if pd.notna(b["remaining_games"]) else None
++        key = f"{a['team_key']}|{b['team_key']}|{int(a['week'])}".encode()
++        sims.append(simulate_matchup(
++            model, a["team_key"], b["team_key"],
++            current_a=a.to_dict() if started else None, current_b=b.to_dict() if started else None,
++            games_a=rem_a, games_b=rem_b, n_sims=n_sims, seed=zlib.crc32(key)))
++    return sims
++
++
++# ---------------------------------------------------------------------- backtest
++def _actual_category_results(a: pd.Series, b: pd.Series) -> dict[str, float]:
++    from .categories import category_value
++    return {c.name: compare(category_value(a, c), category_value(b, c), c) for c in CATEGORIES}
++
++
++def _empirical_baseline(hist: pd.DataFrame, ta: str, tb: str) -> dict[str, float]:
++    """Nonparametric baseline: how often A's past weekly value beat B's past weekly value,
++    over every pair of past weeks. No modelling, no schedule adjustment."""
++    from .categories import category_value
++    ra, rb = hist[hist["team_key"] == ta], hist[hist["team_key"] == tb]
++    if ra.empty or rb.empty:
++        return {c: 0.5 for c in CATEGORY_NAMES}
++    out = {}
++    for c in CATEGORIES:
++        va = [category_value(r, c) for _, r in ra.iterrows()]
++        vb = [category_value(r, c) for _, r in rb.iterrows()]
++        out[c.name] = float(np.mean([compare(x, y, c) for x in va for y in vb]))
++    return out
++
++
++def backtest(team_weeks: pd.DataFrame, min_train_weeks: int = 3, n_sims: int = 2000,
++             **fit_kwargs) -> dict:
++    """Walk-forward evaluation: for each completed week w, fit on weeks < w only and
++    predict every matchup in week w before it starts.
++
++    Games are set to the games each team actually got. That is information available
++    ex-ante in principle (the NBA schedule is public and Yahoo shows games remaining),
++    though it does leak which players ended up injured, so treat results as a mild
++    upper bound on pre-week skill.
++    """
++    done = team_weeks[team_weeks["status"] == "postevent"]
++    weeks = sorted(done["week"].unique())
++    cat_rows, match_rows = [], []
++    for w in weeks[min_train_weeks:]:
++        hist = done[done["week"] < w]
++        model = fit_team_model(hist, teams=sorted(done["team_key"].unique()), **fit_kwargs)
++        for mid, grp in done[done["week"] == w].groupby("matchup_id"):
++            if len(grp) != 2:
++                continue
++            a, b = grp.iloc[0], grp.iloc[1]
++            sim = simulate_matchup(model, a["team_key"], b["team_key"],
++                                   games_a=a["games"], games_b=b["games"], n_sims=n_sims,
++                                   seed=int(w) * 1000 + len(match_rows))
++            actual = _actual_category_results(a, b)
++            base = _empirical_baseline(hist, a["team_key"], b["team_key"])
++            for c in CATEGORY_NAMES:
++                for flip in (False, True):  # both perspectives -> symmetric calibration
++                    p, pb, y = sim.cat_prob[c], base[c], actual[c]
++                    if flip:
++                        p, pb, y = 1 - p, 1 - pb, 1 - y
++                    cat_rows.append({"week": w, "matchup_id": mid, "category": c,
++                                     "p_model": p, "p_baseline": pb, "y": y})
++            won = sum(v == 1 for v in actual.values())
++            lost = sum(v == 0 for v in actual.values())
++            y_m = 1.0 if won > lost else (0.5 if won == lost else 0.0)
++            match_rows.append({"week": w, "matchup_id": mid, "team_a": a["team_key"],
++                               "team_b": b["team_key"], "p_win": sim.p_win + 0.5 * sim.p_tie,
++                               "y": y_m, "exp_cats": sim.exp_cats_a,
++                               "actual_cats": won + 0.5 * (9 - won - lost)})
++    cats, matches = pd.DataFrame(cat_rows), pd.DataFrame(match_rows)
++    return {"categories": cats, "matchups": matches, "metrics": _metrics(cats, matches),
++            "calibration": calibration_table(cats) if not cats.empty else pd.DataFrame()}
++
++
++def _brier(p, y):
++    return float(np.mean((np.asarray(p) - np.asarray(y)) ** 2))
++
++
++def _logloss(p, y, eps=1e-3):
++    p = np.clip(np.asarray(p), eps, 1 - eps)
++    y = np.asarray(y)
++    return float(-np.mean(y * np.log(p) + (1 - y) * np.log(1 - p)))
++
++
++def _metrics(cats: pd.DataFrame, matches: pd.DataFrame) -> pd.DataFrame:
++    if cats.empty:
++        return pd.DataFrame()
++    rows = []
++    for label, col in (("Model", "p_model"), ("Empirical all-play baseline", "p_baseline")):
++        rows.append({"model": label, "category_brier": _brier(cats[col], cats["y"]),
++                     "category_logloss": _logloss(cats[col], cats["y"])})
++    rows.append({"model": "Coin flip (0.5)", "category_brier": _brier(np.full(len(cats), .5), cats["y"]),
++                 "category_logloss": _logloss(np.full(len(cats), .5), cats["y"])})
++    out = pd.DataFrame(rows)
++    if not matches.empty:
++        out.loc[0, "matchup_brier"] = _brier(matches["p_win"], matches["y"])
++        out.loc[2, "matchup_brier"] = _brier(np.full(len(matches), .5), matches["y"])
++        out.loc[0, "cats_MAE"] = float(np.mean(np.abs(matches["exp_cats"] - matches["actual_cats"])))
++    # Brier skill score vs coin flip: 1 = perfect, 0 = no better than 50/50.
++    out["category_BSS"] = 1 - out["category_brier"] / out.loc[2, "category_brier"]
++    return out
++
++
++def calibration_table(cats: pd.DataFrame, bins: int = 10) -> pd.DataFrame:
++    edges = np.linspace(0, 1, bins + 1)
++    b = pd.cut(cats["p_model"], edges, include_lowest=True)
++    return (cats.groupby(b, observed=True)
++            .agg(mean_pred=("p_model", "mean"), observed=("y", "mean"), n=("y", "size"))
++            .reset_index(drop=True))
++
++
++def roster_priors(rosters: pd.DataFrame, players: pd.DataFrame) -> pd.DataFrame:
++    """Per player-game component rates implied by each team's current roster.
++
++    ``rosters`` needs ``team_key`` and ``PLAYER_ID`` (after name matching); ``players`` is a
++    per-game table (blended season). Each player is weighted by availability x minutes,
++    a proxy for how many of the team's started games he'll fill.
++    """
++    if rosters is None or rosters.empty or "PLAYER_ID" not in rosters:
++        return pd.DataFrame(columns=COMPONENTS)
++    avail = players["availability"] if "availability" in players else 1.0
++    p = players.assign(_w=avail * players["MIN"].clip(lower=1))
++    m = rosters.dropna(subset=["PLAYER_ID"]).merge(p, on="PLAYER_ID", how="inner")
++    if m.empty:
++        return pd.DataFrame(columns=COMPONENTS)
++    rows = {}
++    for team, g in m.groupby("team_key"):
++        w = g["_w"] / g["_w"].sum()
++        tot = {c: float((g[c] * w).sum()) for c in ("FGM", "FGA", "FTM", "FTA", "FG3M", "PTS", "REB",
++                                                    "AST", "STL", "BLK", "TOV")}
++        rows[team] = {"FGA": tot["FGA"], "FGP": tot["FGM"] / max(tot["FGA"], 1e-9), "FTA": tot["FTA"],
++                      "FTP": tot["FTM"] / max(tot["FTA"], 1e-9), "FG3M": tot["FG3M"], "PTS": tot["PTS"],
++                      "REB": tot["REB"], "AST": tot["AST"], "STL": tot["STL"], "BLK": tot["BLK"],
++                      "TOV": tot["TOV"]}
++    return pd.DataFrame(rows).T[COMPONENTS]
+diff --git a/fantasy/nba_data.py b/fantasy/nba_data.py
+new file mode 100644
+index 0000000..28f2f59
+--- /dev/null
++++ b/fantasy/nba_data.py
+@@ -0,0 +1,227 @@
++"""NBA stats + schedule via ``nba_api``.
++
++Changes from the original app
++-----------------------------
++* **One league-wide call instead of one call per player.** ``LeagueDashPlayerStats``
++  returns every player's per-game line in a single request; the old comparison page
++  hit ``PlayerGameLog`` once per player per click (and stats.nba.com throttles hard).
++* **Season is derived from the date**, not hard-coded to ``"2024-25"``.
++* **Shooting percentages are volume-weighted** (sum makes / sum attempts). The old
++  comparison averaged per-game FG%, so a 1/1 night counted as much as 10/25.
++* **Early-season blending.** Before ~15 games a player's current-season line is mostly
++  noise, so ``blend_seasons`` shrinks it toward last season (see docstring).
++"""
++from __future__ import annotations
++
++import logging
++import re
++import time
++import unicodedata
++from datetime import date
++
++import numpy as np
++import pandas as pd
++
++log = logging.getLogger(__name__)
++
++STAT_COLS = ["MIN", "FGM", "FGA", "FTM", "FTA", "FG3M", "PTS", "REB", "AST", "STL", "BLK", "TOV"]
++NBA_HEADERS = {
++    "Host": "stats.nba.com",
++    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
++                  "(KHTML, like Gecko) Chrome/124.0 Safari/537.36",
++    "Accept": "application/json, text/plain, */*",
++    "Accept-Language": "en-US,en;q=0.9",
++    "Referer": "https://www.nba.com/",
++    "Origin": "https://www.nba.com",
++    "Connection": "keep-alive",
++}
++
++# Yahoo's editorial team abbreviations -> NBA tricodes (only the ones that differ).
++YAHOO_TO_NBA_TEAM = {
++    "GS": "GSW", "NO": "NOP", "NY": "NYK", "SA": "SAS", "PHO": "PHX",
++    "UTAH": "UTA", "WSH": "WAS", "BRK": "BKN", "CHO": "CHA", "NOR": "NOP",
++}
++
++
++def season_for(d: date | None = None) -> str:
++    """NBA season label for a date. Training camp opens in late September, so from
++    August onward we treat the upcoming season as current (``2026-09-27 -> '2026-27'``)."""
++    d = d or date.today()
++    start = d.year if d.month >= 8 else d.year - 1
++    return f"{start}-{str(start + 1)[-2:]}"
++
++
++def previous_season(season: str) -> str:
++    start = int(season[:4]) - 1
++    return f"{start}-{str(start + 1)[-2:]}"
++
++
++def normalize_name(name: str) -> str:
++    """Canonical key for joining Yahoo and NBA player names.
++
++    Handles accents (Jokić), suffixes (Jr., III), punctuation (O'Neale, P.J.) and
++    spacing, which covers essentially every Yahoo/NBA name mismatch in practice.
++    """
++    if not isinstance(name, str):
++        return ""
++    n = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode()
++    n = n.lower().replace(".", "").replace("'", "").replace("-", " ")
++    n = re.sub(r"\b(jr|sr|ii|iii|iv|v)\b", "", n)
++    return re.sub(r"\s+", " ", n).strip()
++
++
++def _with_retries(fn, attempts: int = 3, base_delay: float = 1.5):
++    last = None
++    for i in range(attempts):
++        try:
++            return fn()
++        except Exception as exc:  # stats.nba.com times out / 429s intermittently
++            last = exc
++            time.sleep(base_delay * (2 ** i))
++    raise last  # type: ignore[misc]
++
++
++def fetch_player_per_game(season: str, last_n_games: int = 0) -> pd.DataFrame:
++    """Per-game lines for every player in ``season`` (optionally last N games)."""
++    from nba_api.stats.endpoints import leaguedashplayerstats
++
++    def call():
++        return leaguedashplayerstats.LeagueDashPlayerStats(
++            season=season, per_mode_detailed="PerGame", last_n_games=last_n_games,
++            season_type_all_star="Regular Season", headers=NBA_HEADERS, timeout=45,
++        ).get_data_frames()[0]
++
++    try:
++        raw = _with_retries(call)
++    except Exception as exc:
++        log.warning("nba_api player stats failed for %s: %s", season, exc)
++        return pd.DataFrame()
++    if raw.empty:
++        return raw
++    df = raw.rename(columns={"TEAM_ABBREVIATION": "TEAM"})
++    return standardize_player_frame(df)
++
++
++def standardize_player_frame(df: pd.DataFrame) -> pd.DataFrame:
++    keep = ["PLAYER_ID", "PLAYER_NAME", "TEAM", "GP", *STAT_COLS]
++    out = df[[c for c in keep if c in df.columns]].copy()
++    for c in ["GP", *STAT_COLS]:
++        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0)
++    out["name_key"] = out["PLAYER_NAME"].map(normalize_name)
++    return out.reset_index(drop=True)
++
++
++def blend_seasons(current: pd.DataFrame, prior: pd.DataFrame, k: float = 15.0) -> pd.DataFrame:
++    """Shrink current-season per-game rates toward last season.
++
++    ``rate = w * current + (1 - w) * prior`` with ``w = GP / (GP + k)``. With k=15 a
++    player 5 games in is weighted 25% current / 75% prior; at 45 games it is 75/25.
++    This is the standard beta-binomial / credibility-weighting argument: k is roughly
++    the number of games at which current-season signal equals the prior's. Players
++    with no prior (rookies) use current only; players with no current games (injured,
++    or preseason) use prior only, so the draft board works before opening night.
++    """
++    if current is None or current.empty:
++        out = prior.copy()
++        out["GP_CUR"] = 0.0
++        out["GP_TOT"] = out["GP"]
++        out["blend_w"] = 0.0
++        out["availability"] = (out["GP"] / 82).clip(0, 1)
++        return out
++    if prior is None or prior.empty:
++        out = current.copy()
++        out["GP_CUR"] = out["GP"]
++        out["GP_TOT"] = out["GP"]
++        out["blend_w"] = 1.0
++        return out
++
++    cur = current.set_index("PLAYER_ID")
++    pri = prior.set_index("PLAYER_ID")
++    ids = cur.index.union(pri.index)
++    cur, pri = cur.reindex(ids), pri.reindex(ids)
++    gp_cur = cur["GP"].fillna(0.0)
++    w = gp_cur / (gp_cur + k)
++    w = w.where(pri["GP"].fillna(0) > 0, 1.0)          # no prior -> trust current
++    w = w.where(gp_cur > 0, 0.0)                         # no current -> prior only
++    out = pd.DataFrame(index=ids)
++    for c in STAT_COLS:
++        out[c] = w * cur[c].fillna(0.0) + (1 - w) * pri[c].fillna(0.0)
++    out["PLAYER_NAME"] = cur["PLAYER_NAME"].fillna(pri["PLAYER_NAME"])
++    out["TEAM"] = cur["TEAM"].fillna(pri["TEAM"])          # current team after trades/FA
++    gp_pri = pri["GP"].fillna(0.0)
++    out["GP"] = gp_cur.where(gp_cur > 0, gp_pri)
++    out["GP_CUR"] = gp_cur
++    out["GP_TOT"] = gp_cur + gp_pri                     # evidence behind the blended line
++    out["blend_w"] = w
++    # Availability (share of team games played) blends the same way: early-season
++    # GP/team-games is dominated by a couple of rest days, last season's 82-game rate isn't.
++    team = out["TEAM"]
++    cur_team_games = gp_cur.groupby(team).transform("max").clip(lower=1)
++    out["availability"] = (w * (gp_cur / cur_team_games) + (1 - w) * (gp_pri / 82)).clip(0, 1)
++    out["name_key"] = out["PLAYER_NAME"].map(normalize_name)
++    return out.reset_index().rename(columns={"index": "PLAYER_ID"})
++
++
++def fetch_schedule(season: str) -> pd.DataFrame:
++    """Full regular-season schedule: one row per game with date, home and away tricodes."""
++    from nba_api.stats.endpoints import scheduleleaguev2
++
++    def call():
++        return scheduleleaguev2.ScheduleLeagueV2(
++            season=season, headers=NBA_HEADERS, timeout=45).get_data_frames()[0]
++
++    try:
++        raw = _with_retries(call)
++    except Exception as exc:
++        log.warning("nba_api schedule failed for %s: %s", season, exc)
++        return pd.DataFrame(columns=["game_date", "home", "away"])
++    date_col = "gameDateEst" if "gameDateEst" in raw.columns else "gameDate"
++    out = pd.DataFrame({
++        "game_date": pd.to_datetime(raw[date_col], errors="coerce").dt.date,
++        "home": raw.get("homeTeam_teamTricode"),
++        "away": raw.get("awayTeam_teamTricode"),
++    }).dropna()
++    # Preseason/All-Star rows have non-NBA tricodes or empty teams; keep real matchups only.
++    return out[(out["home"].str.len() == 3) & (out["away"].str.len() == 3)].reset_index(drop=True)
++
++
++def games_by_team(schedule: pd.DataFrame, start: date, end: date) -> pd.Series:
++    """Games each NBA team plays in ``[start, end]`` (inclusive)."""
++    if schedule is None or schedule.empty:
++        return pd.Series(dtype=float)
++    window = schedule[(schedule["game_date"] >= start) & (schedule["game_date"] <= end)]
++    return pd.concat([window["home"], window["away"]]).value_counts().astype(float)
++
++
++def fetch_game_logs(player_id: int, season: str) -> pd.DataFrame:
++    from nba_api.stats.endpoints import playergamelog
++
++    def call():
++        return playergamelog.PlayerGameLog(
++            player_id=player_id, season=season, season_type_all_star="Regular Season",
++            headers=NBA_HEADERS, timeout=45).get_data_frames()[0]
++
++    try:
++        df = _with_retries(call)
++    except Exception as exc:
++        log.warning("game log failed for %s: %s", player_id, exc)
++        return pd.DataFrame()
++    if df.empty:
++        return df
++    df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="mixed", errors="coerce")
++    return df
++
++
++def summarize_logs(df: pd.DataFrame, mode: str = "Average") -> pd.Series:
++    """Per-game average or total from game logs, with volume-weighted percentages."""
++    cols = ["MIN", "FGM", "FGA", "FG3M", "FG3A", "FTM", "FTA", "OREB", "DREB", "REB",
++            "AST", "STL", "BLK", "TOV", "PF", "PTS", "PLUS_MINUS"]
++    cols = [c for c in cols if c in df.columns]
++    totals = df[cols].apply(pd.to_numeric, errors="coerce").sum()
++    out = totals / len(df) if mode == "Average" else totals.copy()
++    out = out.round(1)
++    out["GP"] = len(df)
++    for pct, m, a in (("FG%", "FGM", "FGA"), ("3P%", "FG3M", "FG3A"), ("FT%", "FTM", "FTA")):
++        if m in totals and a in totals:
++            out[pct] = round(totals[m] / totals[a], 3) if totals[a] > 0 else np.nan
++    return out
+diff --git a/fantasy/power.py b/fantasy/power.py
+new file mode 100644
+index 0000000..089fe49
+--- /dev/null
++++ b/fantasy/power.py
+@@ -0,0 +1,223 @@
++"""League-level analytics: all-play records, luck, form, power ratings, playoff odds.
++
++All-play
++    Every completed week, score each team against *every* other team, not just its
++    scheduled opponent. The all-play win% is the record a team "deserved" with a
++    random schedule; the gap to its real record is schedule luck. This is the single
++    most informative fix over the original "sum of category ranks" leaderboard, which
++    rewards being decent everywhere even though H2H only pays for beating one
++    opponent in 5 of 9.
++
++Scoring types
++    Yahoo H2H has two formats: ``head`` (each category is a W/L/T in the standings,
++    e.g. 6-3 is six wins) and ``headone`` (the matchup is one W/L/T). Luck, standings
++    simulation and playoff odds all follow the league's actual format.
++"""
++from __future__ import annotations
++
++from itertools import combinations
++
++import numpy as np
++import pandas as pd
++
++from .categories import CATEGORIES, CATEGORY_NAMES, category_value, compare
++from .matchup_model import TeamModel, perturbed, simulate_matchup
++
++
++def _week_values(week_df: pd.DataFrame) -> pd.DataFrame:
++    vals = {c.name: week_df.apply(lambda r, c=c: category_value(r, c), axis=1) for c in CATEGORIES}
++    return pd.DataFrame(vals).set_axis(list(week_df["team_key"]), axis=0)
++
++
++def head_to_head(v: pd.DataFrame, a: str, b: str) -> dict[str, float]:
++    return {c.name: compare(v.at[a, c.name], v.at[b, c.name], c) for c in CATEGORIES}
++
++
++def all_play(team_weeks: pd.DataFrame) -> dict[str, pd.DataFrame]:
++    """All-play and actual results from completed team-weeks.
++
++    Returns ``summary`` (one row per team), ``category_rates`` (team x category all-play
++    win rate) and ``weekly`` (team x week all-play matchup win%).
++    """
++    done = team_weeks[team_weeks["status"] == "postevent"]
++    summ: dict[str, dict] = {}
++    cat_hits: dict[str, dict[str, list]] = {}
++    weekly = []
++    for week, wk in done.groupby("week"):
++        v = _week_values(wk)
++        teams = list(v.index)
++        opp = dict(zip(wk["team_key"], wk["opponent_key"]))
++        for t in teams:
++            s = summ.setdefault(t, dict(ap_w=0, ap_l=0, ap_t=0, ap_cw=0.0, ap_cn=0,
++                                        w=0, l=0, t=0, cw=0.0, cl=0.0, ct=0.0, weeks=0))
++            ch = cat_hits.setdefault(t, {c: [] for c in CATEGORY_NAMES})
++            wk_w = wk_n = 0.0
++            for o in teams:
++                if o == t:
++                    continue
++                r = head_to_head(v, t, o)
++                won = sum(x == 1 for x in r.values())
++                lost = sum(x == 0 for x in r.values())
++                res = 1.0 if won > lost else 0.5 if won == lost else 0.0
++                s["ap_w"] += res == 1.0
++                s["ap_l"] += res == 0.0
++                s["ap_t"] += res == 0.5
++                s["ap_cw"] += sum(r.values())
++                s["ap_cn"] += 9
++                wk_w += res
++                wk_n += 1
++                for c, x in r.items():
++                    ch[c].append(x)
++                if o == opp.get(t):
++                    s["w"] += res == 1.0
++                    s["l"] += res == 0.0
++                    s["t"] += res == 0.5
++                    s["cw"] += won
++                    s["cl"] += lost
++                    s["ct"] += 9 - won - lost
++            s["weeks"] += 1
++            weekly.append({"team_key": t, "week": week, "ap_pct": wk_w / wk_n if wk_n else np.nan})
++
++    rows = []
++    for t, s in summ.items():
++        ap_n = s["ap_w"] + s["ap_l"] + s["ap_t"]
++        n = s["w"] + s["l"] + s["t"]
++        cn = s["cw"] + s["cl"] + s["ct"]
++        rows.append({
++            "team_key": t, "weeks": s["weeks"],
++            "ap_record": f"{s['ap_w']}-{s['ap_l']}-{s['ap_t']}",
++            "ap_pct": (s["ap_w"] + 0.5 * s["ap_t"]) / ap_n if ap_n else np.nan,
++            "ap_cat_pct": s["ap_cw"] / s["ap_cn"] if s["ap_cn"] else np.nan,
++            "h2h_record": f"{s['w']}-{s['l']}-{s['t']}",
++            "h2h_pct": (s["w"] + 0.5 * s["t"]) / n if n else np.nan,
++            "cat_record": f"{int(s['cw'])}-{int(s['cl'])}-{int(s['ct'])}",
++            "cat_pct": (s["cw"] + 0.5 * s["ct"]) / cn if cn else np.nan,
++        })
++    summary = pd.DataFrame(rows)
++    if not summary.empty:
++        # Expected wins vs. actual: positive = the schedule has been kind.
++        summary["luck_matchup"] = summary["h2h_pct"] - summary["ap_pct"]
++        summary["luck_category"] = summary["cat_pct"] - summary["ap_cat_pct"]
++    cat_rates = pd.DataFrame({t: {c: np.mean(v) for c, v in d.items()} for t, d in cat_hits.items()}).T
++    return {"summary": summary, "category_rates": cat_rates.reindex(columns=CATEGORY_NAMES),
++            "weekly": pd.DataFrame(weekly)}
++
++
++def recent_form(weekly: pd.DataFrame, half_life: float = 3.0) -> pd.Series:
++    """Exponentially weighted all-play win% (recent weeks count more)."""
++    if weekly.empty:
++        return pd.Series(dtype=float)
++    last = weekly["week"].max()
++    w = 0.5 ** ((last - weekly["week"]) / half_life)
++    tmp = weekly.assign(w=w, wx=w * weekly["ap_pct"])
++    g = tmp.groupby("team_key")[["wx", "w"]].sum()
++    return g["wx"] / g["w"]
++
++
++def power_ratings(model: TeamModel, n_sims: int = 1500) -> pd.Series:
++    """P(beat a randomly drawn league opponent in a typical full week), ties = half.
++
++    Built on the matchup model, so it is schedule-neutral, games-neutral and regresses
++    early-season noise toward the league mean via the model's shrinkage.
++    """
++    teams = model.teams()
++    score = {t: [] for t in teams}
++    for a, b in combinations(teams, 2):
++        g = float(np.median(model.games_per_week))  # equal games: rate the roster, not the schedule
++        sim = simulate_matchup(model, a, b, games_a=g, games_b=g, n_sims=n_sims,
++                               seed=(teams.index(a) * 131 + teams.index(b)))
++        p = sim.p_win + 0.5 * sim.p_tie
++        score[a].append(p)
++        score[b].append(1 - p)
++    return pd.Series({t: float(np.mean(v)) if v else np.nan for t, v in score.items()})
++
++
++def playoff_odds(
++    model: TeamModel,
++    team_weeks: pd.DataFrame,
++    future: pd.DataFrame,
++    num_playoff_teams: int,
++    scoring_type: str = "head",
++    playoff_start_week: int | None = None,
++    n_sims: int = 2000,
++    seed: int = 7,
++) -> pd.DataFrame:
++    """Monte Carlo the rest of the regular season.
++
++    ``team_weeks`` supplies the banked record (completed regular-season weeks) and the
++    in-progress week's live totals; ``future`` is scoreboard rows for weeks not yet
++    completed (pairings from Yahoo). Each simulated season reuses one draw per matchup,
++    ranks by win% with a random tiebreak (Yahoo's real tiebreakers are not public
++    for every format, so we treat exact ties as coin flips).
++    """
++    rng = np.random.default_rng(seed)
++    teams = model.teams()
++    idx = {t: i for i, t in enumerate(teams)}
++    W = np.zeros((n_sims, len(teams)))
++    L = np.zeros_like(W)
++    T = np.zeros_like(W)
++
++    reg = team_weeks
++    if playoff_start_week:
++        reg = reg[reg["week"] < playoff_start_week]
++    ap = all_play(reg)["summary"].set_index("team_key") if not reg.empty else pd.DataFrame()
++    for t in teams:
++        if t in ap.index:
++            rec = ap.at[t, "cat_record" if scoring_type == "head" else "h2h_record"]
++            w, l, tt = (float(x) for x in rec.split("-"))
++            W[:, idx[t]] += w
++            L[:, idx[t]] += l
++            T[:, idx[t]] += tt
++
++    fut = future[future["status"] != "postevent"]
++    if playoff_start_week:
++        fut = fut[fut["week"] < playoff_start_week]
++    # Strength uncertainty is shared across a team's whole simulated season, so we draw it
++    # once per block of seasons (``n_draws`` posterior draws x ``n_sims / n_draws`` seasons)
++    # instead of independently per week, which would wash it out and overstate certainty.
++    n_draws = 25
++    per = int(np.ceil(n_sims / n_draws))
++    draws = [perturbed(model, rng) for _ in range(n_draws)]
++    for _, grp in fut.groupby("matchup_id", sort=False):
++        if len(grp) != 2:
++            continue
++        a, b = grp.iloc[0], grp.iloc[1]
++        if a["team_key"] not in idx or b["team_key"] not in idx:
++            continue
++        live = a["status"] == "midevent"
++        rem_a = a["remaining_games"] if live and pd.notna(a["remaining_games"]) else None
++        rem_b = b["remaining_games"] if live and pd.notna(b["remaining_games"]) else None
++        parts = [simulate_matchup(m_, a["team_key"], b["team_key"],
++                                  current_a=a.to_dict() if live else None,
++                                  current_b=b.to_dict() if live else None,
++                                  games_a=rem_a, games_b=rem_b, n_sims=per,
++                                  seed=int(rng.integers(0, 2 ** 31))) for m_ in draws]
++        sim = type(parts[0])(parts[0].team_a, parts[0].team_b, parts[0].cat_prob, parts[0].proj_a,
++                             parts[0].proj_b, 0, 0, 0, 0,
++                             np.concatenate([p.cats_a for p in parts])[:n_sims],
++                             np.concatenate([p.cats_b for p in parts])[:n_sims],
++                             np.concatenate([p.ties for p in parts])[:n_sims])
++        ia, ib = idx[a["team_key"]], idx[b["team_key"]]
++        if scoring_type == "head":
++            W[:, ia] += sim.cats_a; L[:, ia] += sim.cats_b; T[:, ia] += sim.ties
++            W[:, ib] += sim.cats_b; L[:, ib] += sim.cats_a; T[:, ib] += sim.ties
++        else:
++            aw, bw = sim.cats_a > sim.cats_b, sim.cats_b > sim.cats_a
++            tie = ~(aw | bw)
++            W[:, ia] += aw; L[:, ia] += bw; T[:, ia] += tie
++            W[:, ib] += bw; L[:, ib] += aw; T[:, ib] += tie
++
++    games = W + L + T
++    pct = np.where(games > 0, (W + 0.5 * T) / np.where(games > 0, games, 1), 0.5)
++    noisy = pct + rng.uniform(0, 1e-6, pct.shape)
++    rank = (-noisy).argsort(1).argsort(1) + 1
++    return pd.DataFrame({
++        "team_key": teams,
++        "playoff_odds": (rank <= num_playoff_teams).mean(0),
++        "top_seed_odds": (rank == 1).mean(0),
++        "exp_win_pct": pct.mean(0),
++        "exp_wins": W.mean(0),
++        "wins_p10": np.percentile(W, 10, axis=0),
++        "wins_p90": np.percentile(W, 90, axis=0),
++        "exp_rank": rank.mean(0),
++    }).sort_values("playoff_odds", ascending=False).reset_index(drop=True)
+diff --git a/fantasy/trade.py b/fantasy/trade.py
+new file mode 100644
+index 0000000..92f9df2
+--- /dev/null
++++ b/fantasy/trade.py
+@@ -0,0 +1,115 @@
++"""Trade and waiver decision tools built on the z-score valuation.
++
++Context weighting
++-----------------
++Raw z-score totals treat every category as equally valuable, but in H2H a category
++you already win 90% of the time (or lose 90%) barely moves your matchup odds. The
++marginal value of a category is highest where your win rate is near 50%. We weight
++each category by ``floor + (1 - floor) * 4 p (1 - p)`` where ``p`` is the team's
++all-play win rate in that category (``4p(1-p)`` peaks at 1 when p = 0.5 and is the
++derivative-shaped "swing" weight). Punted categories get weight 0.
++
++Roster-spot asymmetry
++---------------------
++In a 2-for-1 the side receiving one player opens a roster spot they can fill from
++waivers; the side receiving two must cut someone. We price that at replacement
++level: ``delta += (players_given - players_received) * replacement_z``.
++"""
++from __future__ import annotations
++
++from dataclasses import dataclass
++
++import numpy as np
++import pandas as pd
++
++from .categories import CATEGORY_NAMES
++from .nba_data import YAHOO_TO_NBA_TEAM, normalize_name
++from .valuation import Z_COLS, category_profile
++
++
++def context_weights(cat_rates: pd.Series | None, punts=(), floor: float = 0.25) -> pd.Series:
++    if cat_rates is None or cat_rates.empty:
++        w = pd.Series(1.0, index=CATEGORY_NAMES)
++    else:
++        p = cat_rates.reindex(CATEGORY_NAMES).fillna(0.5).clip(0, 1)
++        w = floor + (1 - floor) * 4 * p * (1 - p)
++    for c in punts:
++        if c in w.index:
++            w[c] = 0.0
++    return w
++
++
++@dataclass
++class TradeEval:
++    table: pd.DataFrame
++    raw_delta: float
++    weighted_delta: float
++    verdict: str
++
++
++def evaluate_trade(values: pd.DataFrame, give_ids: list, get_ids: list,
++                   replacement: pd.Series, weights: pd.Series | None = None) -> TradeEval:
++    give = category_profile(values, give_ids)
++    get = category_profile(values, get_ids)
++    spot_adj = (len(give_ids) - len(get_ids)) * replacement.reindex(CATEGORY_NAMES).fillna(0)
++    delta = get - give + spot_adj
++    w = weights if weights is not None else pd.Series(1.0, index=CATEGORY_NAMES)
++    table = pd.DataFrame({"give_z": give, "get_z": get, "roster_spot_adj": spot_adj,
++                          "delta": delta, "weight": w, "weighted_delta": delta * w})
++    active = w > 0
++    raw = float(delta[active].sum())
++    weighted = float((delta * w)[active].sum())
++    # Thresholds in z units: ~0.5 z is roughly the gap between adjacent draft rounds.
++    if weighted > 0.75:
++        verdict = "Accept: clear win for your build"
++    elif weighted > 0.25:
++        verdict = "Lean accept: modest gain"
++    elif weighted > -0.25:
++        verdict = "Neutral: value is roughly even; decide on fit and schedule"
++    elif weighted > -0.75:
++        verdict = "Lean decline: modest loss"
++    else:
++        verdict = "Decline: you give up meaningful value"
++    return TradeEval(table, raw, weighted, verdict)
++
++
++def match_players(yahoo: pd.DataFrame, values: pd.DataFrame) -> pd.DataFrame:
++    """Attach NBA valuation rows to Yahoo players by normalised name (+ team as tiebreak)."""
++    if yahoo.empty or values.empty:
++        return yahoo.assign(PLAYER_ID=np.nan)
++    y = yahoo.copy()
++    y["name_key"] = y["name"].map(normalize_name)
++    y["nba_team"] = y.get("editorial_team_abbr", pd.Series("", index=y.index)).fillna("").str.upper()
++    y["nba_team"] = y["nba_team"].map(lambda t: YAHOO_TO_NBA_TEAM.get(t, t))
++    v = values[["PLAYER_ID", "name_key", "TEAM"]]
++    merged = y.merge(v, on="name_key", how="left")
++    # Two NBA players can share a normalised name; keep the one on the matching team.
++    merged["_team_match"] = (merged["TEAM"] == merged["nba_team"]).astype(int)
++    merged = merged.sort_values("_team_match", ascending=False).drop_duplicates(
++        subset=[c for c in ("player_id", "team_key") if c in merged.columns] or ["name_key"])
++    return merged.drop(columns="_team_match")
++
++
++def streaming_board(free_agents: pd.DataFrame, values: pd.DataFrame, games_left: pd.Series,
++                    weights: pd.Series, replacement: pd.Series | None = None) -> pd.DataFrame:
++    """Rank available players for the rest of the current scoring week.
++
++    ``stream_score = games_left * sum_c w_c * (z_c - replacement_c)``: per-game value
++    *above the roster spot you'd be vacating* (proxied by replacement level) in the
++    categories still in play this week, times how many chances you get. Measuring
++    above replacement matters: raw z is negative for nearly every free agent, so
++    ``z * games`` would perversely rank players with *zero* games first. A mediocre
++    player with 4 games often beats a better one with 2; this puts that on one scale.
++    """
++    fa = match_players(free_agents, values)
++    fa = fa.merge(values[["PLAYER_ID", "GP", "MIN", *Z_COLS, "value"]], on="PLAYER_ID", how="inner")
++    team = fa["TEAM"].fillna(fa["nba_team"])
++    fa["games_left"] = team.map(games_left).fillna(0).astype(int)
++    repl = replacement if replacement is not None else pd.Series(0.0, index=CATEGORY_NAMES)
++    wz = sum((fa[f"z_{c}"] - repl.get(c, 0.0)) * weights.get(c, 1.0) for c in CATEGORY_NAMES)
++    fa["weighted_per_game"] = wz
++    fa["stream_score"] = wz * fa["games_left"]
++    cols = ["name", "TEAM", "eligible_positions", "percent_owned", "status", "games_left",
++            "GP", "MIN", "value", "weighted_per_game", "stream_score", *Z_COLS]
++    cols = [c for c in cols if c in fa.columns]
++    return fa[cols].sort_values("stream_score", ascending=False).reset_index(drop=True)
+diff --git a/fantasy/transactions.py b/fantasy/transactions.py
+new file mode 100644
+index 0000000..9e1f971
+--- /dev/null
++++ b/fantasy/transactions.py
+@@ -0,0 +1,96 @@
++"""Free-agency / transaction analytics (the page the original app listed but never built).
++
++Questions it answers
++--------------------
++* Who works the wire, and does activity actually correlate with winning?
++* When do managers make moves (day of week / hour, league timezone)?
++* Which pickups stuck vs. were pure streams? ``hold_days`` pairs every add with the
++  same team's next drop of that player; the median hold time and the share dropped
++  within 7 days separate streamers from genuine pickups.
++* Which players churned through the most rosters?
++"""
++from __future__ import annotations
++
++import numpy as np
++import pandas as pd
++
++DAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
++
++
++def pair_adds_drops(tx: pd.DataFrame) -> pd.DataFrame:
++    """One row per add with the matching later drop by the same team (if any).
++
++    Censored adds (still rostered) keep ``hold_days`` = time until now and ``dropped`` = False,
++    so medians aren't biased toward short holds.
++    """
++    if tx.empty:
++        return pd.DataFrame()
++    adds = tx[tx["action"] == "add"].sort_values("timestamp")
++    drops = tx[tx["action"] == "drop"].sort_values("timestamp")
++    # Censoring point for still-rostered adds: now, but never before the last recorded move.
++    now = max(pd.Timestamp.now(tz=tx["timestamp"].dt.tz), tx["timestamp"].max())
++    rows = []
++    for _, a in adds.iterrows():
++        later = drops[(drops["team_key"] == a["team_key"]) & (drops["player_id"] == a["player_id"])
++                      & (drops["timestamp"] > a["timestamp"])]
++        end = later["timestamp"].iloc[0] if not later.empty else now
++        rows.append({"team_key": a["team_key"], "team_name": a["team_name"],
++                     "player_id": a["player_id"], "player_name": a["player_name"],
++                     "added": a["timestamp"], "source_type": a.get("source_type"),
++                     "dropped": not later.empty,
++                     "hold_days": (end - a["timestamp"]).total_seconds() / 86400})
++    return pd.DataFrame(rows)
++
++
++def team_activity(tx: pd.DataFrame, holds: pd.DataFrame) -> pd.DataFrame:
++    if tx.empty:
++        return pd.DataFrame()
++    counts = tx.pivot_table(index=["team_key", "team_name"], columns="action",
++                            values="player_id", aggfunc="count", fill_value=0).reset_index()
++    for c in ("add", "drop", "trade"):
++        if c not in counts:
++            counts[c] = 0
++    if not holds.empty:
++        h = holds.groupby("team_key").agg(
++            median_hold_days=("hold_days", "median"),
++            stream_rate=("hold_days", lambda s: float(((s <= 7) & holds.loc[s.index, "dropped"]).mean())),
++        ).reset_index()
++        counts = counts.merge(h, on="team_key", how="left")
++    counts["trade_players"] = counts.pop("trade")
++    return counts.sort_values("add", ascending=False).reset_index(drop=True)
++
++
++def timing_heatmap(tx: pd.DataFrame) -> pd.DataFrame:
++    """Adds by day-of-week x hour (league-local time)."""
++    adds = tx[tx["action"] == "add"]
++    if adds.empty:
++        return pd.DataFrame(0, index=DAYS, columns=range(24))
++    t = adds["timestamp"]
++    grid = pd.crosstab(t.dt.dayofweek.map(dict(enumerate(DAYS))), t.dt.hour)
++    return grid.reindex(index=DAYS, columns=range(24), fill_value=0)
++
++
++def hot_players(tx: pd.DataFrame, holds: pd.DataFrame, top: int = 15) -> pd.DataFrame:
++    adds = tx[tx["action"] == "add"]
++    if adds.empty:
++        return pd.DataFrame()
++    g = adds.groupby(["player_id", "player_name"]).agg(
++        times_added=("team_key", "size"), distinct_teams=("team_key", "nunique"),
++        last_added=("timestamp", "max")).reset_index()
++    if not holds.empty:
++        g = g.merge(holds.groupby("player_id")["hold_days"].median().rename("median_hold_days"),
++                    on="player_id", how="left")
++    return g.sort_values(["times_added", "last_added"], ascending=False).head(top)
++
++
++def activity_vs_performance(activity: pd.DataFrame, ap_summary: pd.DataFrame) -> dict:
++    """Spearman rank correlation between wire activity and all-play win%.
++
++    With 10 teams the correlation is noisy (|rho| < ~0.63 is not significant at 5%), so
++    the app reports it with that caveat rather than as a finding.
++    """
++    if activity.empty or ap_summary.empty:
++        return {"rho": np.nan, "n": 0, "frame": pd.DataFrame()}
++    m = activity.merge(ap_summary[["team_key", "ap_pct"]], on="team_key")
++    rho = m["add"].rank().corr(m["ap_pct"].rank()) if len(m) > 2 else np.nan
++    return {"rho": float(rho) if rho == rho else np.nan, "n": len(m), "frame": m}
+diff --git a/fantasy/valuation.py b/fantasy/valuation.py
+new file mode 100644
+index 0000000..c397c1d
+--- /dev/null
++++ b/fantasy/valuation.py
+@@ -0,0 +1,115 @@
++"""Player valuation for 9-cat: replacement-aware z-scores with punt support.
++
++Method
++------
++For each category we measure a player's per-game contribution relative to the pool of
++players who are actually rostered in *this* league (n_teams x roster slots), in units
++of that pool's standard deviation.
++
++* Counting stats: ``z = (x - mean_pool) / sd_pool``; turnovers are sign-flipped.
++* Percentages use **impact**, not raw percentage: ``(pct - pct_pool) * attempts``.
++  A 60% shooter on 3 FGA barely moves a weekly FG%, a 52% shooter on 20 FGA moves it a
++  lot. ``pct_pool`` is volume-weighted (sum makes / sum attempts).
++* The pool is chosen iteratively: score everyone, keep the top N, recompute the pool's
++  means/SDs, repeat until the membership stabilises (3-4 passes). Using all ~550 NBA
++  players as the baseline inflates everyone's z because the denominator is full of
++  end-of-bench players nobody rosters.
++* **Punting**: punted categories are dropped from the total *and* from pool selection,
++  so the pool (and therefore every other category's baseline) reflects the build.
++* Replacement level per category is the mean z of the first ~N/10 players just
++  outside the pool: roughly what you could pick up on waivers today. The trade
++  analyzer uses it to price roster-spot asymmetry in 2-for-1 deals.
++"""
++from __future__ import annotations
++
++from dataclasses import dataclass
++
++import numpy as np
++import pandas as pd
++
++from .categories import CATEGORIES, CATEGORY_NAMES
++
++Z_COLS = [f"z_{c}" for c in CATEGORY_NAMES]
++
++
++@dataclass
++class ValuationResult:
++    table: pd.DataFrame            # one row per player, z per category + totals, ranked
++    replacement: pd.Series         # replacement-level z per category
++    pool_size: int
++    punts: tuple[str, ...]
++
++
++def _zscores(df: pd.DataFrame, pool_mask: pd.Series) -> pd.DataFrame:
++    pool = df[pool_mask]
++    z = pd.DataFrame(index=df.index)
++    for cat in CATEGORIES:
++        if cat.kind == "pct":
++            pool_pct = pool[cat.makes].sum() / max(pool[cat.attempts].sum(), 1e-9)
++            player_pct = np.where(df[cat.attempts] > 0, df[cat.makes] / df[cat.attempts].where(df[cat.attempts] > 0, 1), pool_pct)
++            impact = (player_pct - pool_pct) * df[cat.attempts]
++            pool_impact = impact[pool_mask]
++            sd = pool_impact.std(ddof=0)
++            z[f"z_{cat.name}"] = (impact - pool_impact.mean()) / (sd if sd > 0 else 1.0)
++        else:
++            mu, sd = pool[cat.stat].mean(), pool[cat.stat].std(ddof=0)
++            val = (df[cat.stat] - mu) / (sd if sd > 0 else 1.0)
++            z[f"z_{cat.name}"] = val if cat.higher_is_better else -val
++    return z
++
++
++def value_players(
++    players: pd.DataFrame,
++    n_teams: int = 10,
++    roster_size: int = 13,
++    punts: tuple[str, ...] | list[str] = (),
++    min_games: int = 5,
++    max_iter: int = 6,
++) -> ValuationResult:
++    """Score players (per-game columns FGM, FGA, FTM, FTA, FG3M, PTS, REB, AST, STL, BLK, TOV)."""
++    punts = tuple(p for p in punts if p in CATEGORY_NAMES)
++    evidence = players["GP_TOT"] if "GP_TOT" in players else players["GP"]
++    df = players[evidence >= min_games].copy().reset_index(drop=True)
++    if df.empty:
++        return ValuationResult(df, pd.Series(0.0, index=CATEGORY_NAMES), 0, punts)
++    pool_size = min(n_teams * roster_size, len(df))
++    active = [f"z_{c}" for c in CATEGORY_NAMES if c not in punts]
++
++    # Seed the pool with minutes played: a stable, category-neutral first guess.
++    pool_mask = df["MIN"].rank(ascending=False, method="first") <= pool_size
++    for _ in range(max_iter):
++        z = _zscores(df, pool_mask)
++        total = z[active].sum(axis=1)
++        new_mask = total.rank(ascending=False, method="first") <= pool_size
++        if (new_mask == pool_mask).all():
++            break
++        pool_mask = new_mask
++
++    z = _zscores(df, pool_mask)
++    df = pd.concat([df, z], axis=1)
++    df["value"] = df[active].sum(axis=1)
++    df["value_all9"] = df[Z_COLS].sum(axis=1)
++    # Availability: a player who plays 55 of 82 games delivers ~2/3 of his per-game value
++    # over a season. Show both; per-game value drives weekly decisions, adjusted drives drafts.
++    if "availability" not in df:
++        team_gp = df.groupby("TEAM")["GP"].transform("max").clip(lower=1)
++        df["availability"] = (df["GP"] / team_gp).clip(0, 1)
++    df["value_adj"] = df["value"] * df["availability"]
++    df["in_pool"] = pool_mask.values
++    df = df.sort_values("value", ascending=False).reset_index(drop=True)
++    df["rank"] = np.arange(1, len(df) + 1)
++
++    band = df.iloc[pool_size: pool_size + max(5, pool_size // 10)]
++    if band.empty:
++        band = df.tail(max(5, pool_size // 10))
++    replacement = band[Z_COLS].mean()
++    replacement.index = CATEGORY_NAMES
++    return ValuationResult(df, replacement, pool_size, punts)
++
++
++def category_profile(values: pd.DataFrame, player_ids: list) -> pd.Series:
++    """Sum of per-category z for a set of players (a roster, or one side of a trade)."""
++    sub = values[values["PLAYER_ID"].isin(player_ids)]
++    s = sub[Z_COLS].sum()
++    s.index = CATEGORY_NAMES
++    return s
+diff --git a/fantasy/yahoo_client.py b/fantasy/yahoo_client.py
+new file mode 100644
+index 0000000..cc6f24a
+--- /dev/null
++++ b/fantasy/yahoo_client.py
+@@ -0,0 +1,348 @@
++"""Yahoo Fantasy API access: auth, league discovery and parsing into tidy frames.
++
++Design notes
++------------
++* **No hard-coded league or team ids.** Yahoo issues a new league key every season
++  (``454.l.74601`` -> ``466.l.xxxxx``), so the old hard-coded ``team_ids`` dict broke
++  every October. We discover the league at runtime and read team names from the API.
++* **Parsing is pure.** ``parse_scoreboard`` / ``parse_transactions`` take raw JSON and
++  return DataFrames, so they are unit-tested against fixtures without network access.
++* **Makes/attempts are kept.** The old parser dropped ``FGM/A`` and ``FTM/A`` and kept
++  only the rounded percentage, which makes it impossible to aggregate or simulate
++  shooting categories correctly. We keep the raw components.
++"""
++from __future__ import annotations
++
++import json
++import logging
++import os
++import shutil
++import tempfile
++from dataclasses import dataclass
++from datetime import datetime, timezone
++from typing import Any, Iterable
++
++import pandas as pd
++
++from .categories import YAHOO_NAME_TO_COL, YAHOO_STAT_IDS
++
++log = logging.getLogger(__name__)
++
++SECRET_FILE_CANDIDATES = ("/etc/secrets/keypair.json", "keypair.json", "oauth2.json")
++TEAM_WEEK_COLUMNS = [
++    "week", "matchup_id", "team_key", "team_name", "opponent_key", "status",
++    "is_playoffs", "is_consolation", "week_start", "week_end",
++    "games", "live_games", "remaining_games",
++    "FGM", "FGA", "FTM", "FTA", "FG3M", "PTS", "REB", "AST", "STL", "BLK", "TOV",
++    "FG%", "FT%",
++]
++
++
++# --------------------------------------------------------------------------- auth
++def _writable_credentials_path() -> str:
++    """Materialise credentials somewhere writable.
++
++    ``yahoo_oauth`` rewrites its JSON file whenever it refreshes the access token.
++    Render mounts ``/etc/secrets`` read-only, so refreshing in place fails once the
++    one-hour token expires. We copy to a temp file and let the library own that copy.
++    Sources, in priority order: ``YAHOO_OAUTH_JSON`` / ``KEYPAIR_JSON`` env vars
++    (raw JSON), then the secret-file candidates.
++    """
++    target = os.path.join(tempfile.gettempdir(), "yahoo_oauth_runtime.json")
++    if os.path.exists(target):
++        return target
++    for env_key in ("YAHOO_OAUTH_JSON", "KEYPAIR_JSON"):
++        raw = os.getenv(env_key)
++        if raw:
++            json.loads(raw)  # fail fast on malformed secrets
++            with open(target, "w") as fh:
++                fh.write(raw)
++            return target
++    for candidate in SECRET_FILE_CANDIDATES:
++        if os.path.exists(candidate):
++            shutil.copyfile(candidate, target)
++            return target
++    raise FileNotFoundError(
++        "No Yahoo OAuth credentials found. Set YAHOO_OAUTH_JSON / KEYPAIR_JSON or mount "
++        "/etc/secrets/keypair.json (fields: consumer_key, consumer_secret, access_token, "
++        "refresh_token, token_time, token_type). Set FANTASY_DEMO=1 to run on demo data."
++    )
++
++
++def authenticate():
++    """Return an authenticated ``yahoo_oauth.OAuth2`` session (auto-refreshing)."""
++    from yahoo_oauth import OAuth2  # imported lazily so tests/demo need no Yahoo deps
++
++    sc = OAuth2(None, None, from_file=_writable_credentials_path())
++    if not sc.token_is_valid():
++        sc.refresh_access_token()
++    return sc
++
++
++def discover_league(sc, league_id: str | None = None, league_key: str | None = None):
++    """Find the league to load, newest season first.
++
++    ``YAHOO_LEAGUE_KEY`` pins an exact key (``466.l.12345``). ``YAHOO_LEAGUE_ID`` matches the
++    numeric id; because renewed leagues usually get a new id, we fall back to the most
++    recent NBA league the logged-in user belongs to.
++    """
++    import yahoo_fantasy_api as yfa
++
++    league_key = league_key or os.getenv("YAHOO_LEAGUE_KEY")
++    league_id = league_id or os.getenv("YAHOO_LEAGUE_ID")
++    gm = yfa.Game(sc, "nba")
++    if league_key:
++        return gm.to_league(league_key)
++    keys = gm.league_ids(game_codes=["nba"])
++    if not keys:
++        raise RuntimeError("The authenticated Yahoo user is not in any NBA leagues.")
++    keys = sorted(set(keys), key=lambda k: int(k.split(".")[0]), reverse=True)  # newest game first
++    if league_id:
++        matching = [k for k in keys if k.endswith(f".l.{league_id}")]
++        if matching:
++            return gm.to_league(matching[0])
++        log.warning("League id %s not found in current seasons; using newest league.", league_id)
++    return gm.to_league(keys[0])
++
++
++# ------------------------------------------------------------------------ parsing
++def _to_float(value: Any) -> float:
++    try:
++        if value in (None, "", "-"):
++            return float("nan")
++        return float(value)
++    except (TypeError, ValueError):
++        return float("nan")
++
++
++def _split_made_attempted(value: Any) -> tuple[float, float]:
++    """``'225/480'`` -> (225.0, 480.0); blanks and ``'-/-'`` -> (0.0, 0.0)."""
++    if not isinstance(value, str) or "/" not in value:
++        return 0.0, 0.0
++    made, att = value.split("/", 1)
++    made_f, att_f = _to_float(made), _to_float(att)
++    return (0.0 if made_f != made_f else made_f, 0.0 if att_f != att_f else att_f)
++
++
++def _iter_numbered(obj: dict) -> Iterable[Any]:
++    """Yahoo encodes arrays as ``{"0": ..., "1": ..., "count": n}``."""
++    for key in sorted((k for k in obj if k.isdigit()), key=int):
++        yield obj[key]
++
++
++def _parse_team_block(team: list) -> dict:
++    """Flatten Yahoo's ``team`` list-of-fragments into one record."""
++    row: dict[str, Any] = {}
++    for fragment in team[0]:
++        if isinstance(fragment, dict):
++            for key in ("team_key", "team_id", "name"):
++                if key in fragment:
++                    row[key] = fragment[key]
++    for fragment in team[1:]:
++        if not isinstance(fragment, dict):
++            continue
++        if "team_stats" in fragment:
++            for stat in fragment["team_stats"].get("stats", []):
++                sid = str(stat["stat"]["stat_id"])
++                label = YAHOO_STAT_IDS.get(sid)
++                value = stat["stat"].get("value")
++                if label == "FGM/A":
++                    row["FGM"], row["FGA"] = _split_made_attempted(value)
++                elif label == "FTM/A":
++                    row["FTM"], row["FTA"] = _split_made_attempted(value)
++                elif label in ("FG%", "FT%"):
++                    row[label] = _to_float(value)
++                elif label in YAHOO_NAME_TO_COL:
++                    v = _to_float(value)
++                    row[YAHOO_NAME_TO_COL[label]] = 0.0 if v != v else v
++        if "team_remaining_games" in fragment:
++            total = fragment["team_remaining_games"].get("total", {})
++            row["remaining_games"] = _to_float(total.get("remaining_games"))
++            row["live_games"] = _to_float(total.get("live_games"))
++            row["games"] = _to_float(total.get("completed_games"))
++    return row
++
++
++def parse_scoreboard(raw: dict) -> pd.DataFrame:
++    """Raw ``league.matchups(week)`` JSON -> one row per team per week.
++
++    Status is Yahoo's ``preevent`` / ``midevent`` / ``postevent``. Only ``postevent``
++    rows are safe to train on; ``midevent`` rows feed the live projection.
++    """
++    league = raw["fantasy_content"]["league"]
++    scoreboard = league[1]["scoreboard"]
++    week_default = scoreboard.get("week")
++    matchups = scoreboard["0"]["matchups"]
++    rows = []
++    for idx, wrapper in enumerate(_iter_numbered(matchups)):
++        m = wrapper["matchup"]
++        teams = [t["team"] for t in _iter_numbered(m["0"]["teams"])]
++        parsed = [_parse_team_block(t) for t in teams]
++        for i, rec in enumerate(parsed):
++            opp = parsed[1 - i] if len(parsed) == 2 else {}
++            rec.update(
++                week=int(m.get("week", week_default)),
++                matchup_id=f"{m.get('week', week_default)}-{idx}",
++                opponent_key=opp.get("team_key"),
++                status=m.get("status", "postevent"),
++                is_playoffs=str(m.get("is_playoffs", "0")) == "1",
++                is_consolation=str(m.get("is_consolation", "0")) == "1",
++                week_start=m.get("week_start"),
++                week_end=m.get("week_end"),
++                team_name=rec.pop("name", None),
++            )
++            rows.append(rec)
++    df = pd.DataFrame(rows)
++    for col in TEAM_WEEK_COLUMNS:
++        if col not in df.columns:
++            df[col] = float("nan")
++    return df[TEAM_WEEK_COLUMNS]
++
++
++def parse_transactions(raw: list[dict], tz: str = "America/New_York") -> pd.DataFrame:
++    """``league.transactions(...)`` -> one row per player movement.
++
++    A single add/drop transaction touches two players, a trade touches several; each
++    becomes its own row with ``action`` in {add, drop, trade} and the team that gained
++    (add/trade) or lost (drop) the player.
++    """
++    rows = []
++    for tx in raw:
++        players = tx.get("players", {})
++        if not isinstance(players, dict):
++            continue
++        ts = datetime.fromtimestamp(int(tx.get("timestamp", 0)), tz=timezone.utc)
++        for entry in _iter_numbered(players):
++            player = entry.get("player", [])
++            if len(player) < 2:
++                continue
++            info = {}
++            for frag in player[0]:
++                if isinstance(frag, dict):
++                    if "player_id" in frag:
++                        info["player_id"] = int(frag["player_id"])
++                    if "name" in frag:
++                        info["player_name"] = frag["name"].get("full")
++                    if "editorial_team_abbr" in frag:
++                        info["nba_team"] = frag["editorial_team_abbr"]
++            tdata = player[1].get("transaction_data", {})
++            tdata = tdata[0] if isinstance(tdata, list) else tdata
++            action = tdata.get("type", tx.get("type"))
++            if action == "drop":
++                team_key, team_name = tdata.get("source_team_key"), tdata.get("source_team_name")
++            else:
++                team_key = tdata.get("destination_team_key")
++                team_name = tdata.get("destination_team_name")
++            rows.append({
++                "transaction_id": tx.get("transaction_id"),
++                "transaction_type": tx.get("type"),
++                "status": tx.get("status"),
++                "timestamp": ts,
++                "action": action,
++                "source_type": tdata.get("source_type"),
++                "team_key": team_key,
++                "team_name": team_name,
++                **info,
++            })
++    df = pd.DataFrame(rows)
++    if df.empty:
++        return pd.DataFrame(columns=["transaction_id", "transaction_type", "status", "timestamp",
++                                     "action", "source_type", "team_key", "team_name",
++                                     "player_id", "player_name", "nba_team"])
++    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(tz)
++    return df.sort_values("timestamp").reset_index(drop=True)
++
++
++# ------------------------------------------------------------------ league facade
++@dataclass
++class LeagueMeta:
++    league_key: str
++    name: str
++    season: str
++    scoring_type: str          # "head" (every category counts) | "headone" (one win per matchup)
++    num_teams: int
++    current_week: int
++    start_week: int
++    end_week: int
++    playoff_start_week: int
++    num_playoff_teams: int
++    roster_size: int
++
++
++class YahooLeague:
++    """Thin, cache-friendly facade over ``yahoo_fantasy_api.League``."""
++
++    def __init__(self, lg):
++        self.lg = lg
++
++    def meta(self) -> LeagueMeta:
++        s = self.lg.settings()
++        try:
++            positions = self.lg.positions()
++            # Injured-list slots don't hold productive players, so they don't set replacement level.
++            roster_size = sum(int(v.get("count", 0)) for k, v in positions.items()
++                              if k not in ("IL", "IL+", "IR"))
++        except Exception:  # positions endpoint is occasionally flaky; 13 is Yahoo's default
++            roster_size = 13
++        end_week = int(s.get("end_week", self.lg.end_week()))
++        return LeagueMeta(
++            league_key=s.get("league_key", self.lg.league_id),
++            name=s.get("name", "Fantasy League"),
++            season=str(s.get("season", "")),
++            scoring_type=s.get("scoring_type", "head"),
++            num_teams=int(s.get("num_teams", 10)),
++            current_week=int(self.lg.current_week()),
++            start_week=int(s.get("start_week", 1)),
++            end_week=end_week,
++            playoff_start_week=int(s.get("playoff_start_week", end_week + 1) or end_week + 1),
++            num_playoff_teams=int(s.get("num_playoff_teams", 6) or 6),
++            roster_size=roster_size or 13,
++        )
++
++    def teams(self) -> pd.DataFrame:
++        rows = []
++        for key, t in self.lg.teams().items():
++            logos = t.get("team_logos") or [{}]
++            logo = logos[0].get("team_logo", {}).get("url") if isinstance(logos[0], dict) else None
++            managers = t.get("managers") or [{}]
++            mgr = managers[0].get("manager", {}).get("nickname") if isinstance(managers[0], dict) else None
++            rows.append({"team_key": key, "team_name": t.get("name"), "logo_url": logo,
++                         "manager": mgr, "moves": t.get("number_of_moves"),
++                         "trades": t.get("number_of_trades")})
++        return pd.DataFrame(rows)
++
++    def standings(self) -> pd.DataFrame:
++        rows = []
++        for t in self.lg.standings():
++            ot = t.get("outcome_totals", {})
++            rows.append({"team_key": t.get("team_key"), "team_name": t.get("name"),
++                         "rank": int(t.get("rank") or 0),
++                         "wins": int(ot.get("wins", 0)), "losses": int(ot.get("losses", 0)),
++                         "ties": int(ot.get("ties", 0))})
++        return pd.DataFrame(rows)
++
++    def scoreboard(self, week: int) -> pd.DataFrame:
++        return parse_scoreboard(self.lg.matchups(week=week))
++
++    def transactions(self) -> pd.DataFrame:
++        return parse_transactions(self.lg.transactions("add,drop,trade", ""))
++
++    def rosters(self, team_keys: Iterable[str]) -> pd.DataFrame:
++        frames = []
++        for key in team_keys:
++            roster = pd.DataFrame(self.lg.to_team(key).roster())
++            if not roster.empty:
++                roster["team_key"] = key
++                frames.append(roster)
++        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
++
++    def free_agents(self, positions: tuple[str, ...] = ("G", "F", "C")) -> pd.DataFrame:
++        seen: dict[int, dict] = {}
++        for pos in positions:
++            for p in self.lg.free_agents(pos):
++                seen.setdefault(p["player_id"], p)
++        df = pd.DataFrame(list(seen.values()))
++        if not df.empty:
++            df["eligible_positions"] = df["eligible_positions"].apply(
++                lambda xs: ",".join(x for x in xs if x not in ("Util", "IL", "IL+")))
++        return df
+diff --git a/logic.py b/logic.py
+deleted file mode 100644
+index 5dbc1e8..0000000
+--- a/logic.py
++++ /dev/null
+@@ -1,259 +0,0 @@
+-# Standard library
+-import datetime
+-import json
+-import os
+-import random
+-import subprocess
+-from collections import Counter
+-
+-# Third-party libraries
+-import matplotlib.pyplot as plt
+-import numpy as np
+-import pandas as pd
+-import plotly.graph_objects as go
+-from plotly.subplots import make_subplots
+-import seaborn as sns
+-from yahoo_oauth import OAuth2
+-import yahoo_fantasy_api as yfa
+-
+-team_ids = {'454.l.74601.t.1': "Sam's Swag Team",
+-            '454.l.74601.t.2': "Doomenshmirtz Evil Inc.",
+-            '454.l.74601.t.3': "Chunch's Challengers",
+-            '454.l.74601.t.4': "Han Da Dons",
+-            '454.l.74601.t.5': "Tyshiii",
+-            '454.l.74601.t.6': "Neal's Fascinating Team",
+-            '454.l.74601.t.7': "Driton's Dazzling Team",
+-            '454.l.74601.t.8': "ariel's Wonderful Team",
+-            '454.l.74601.t.9': "THE REAL MIAMI HEAT",
+-            '454.l.74601.t.10': "darius"}
+-
+-# Define stat labels
+-stat_labels = {
+-    '9004003': 'FGM/A',
+-    '5': 'FG%',
+-    '9007006': 'FTM/A',
+-    '8': 'FT%',
+-    '10': '3PTM',
+-    '12': 'PTS',
+-    '15': 'REB',
+-    '16': 'AST',
+-    '17': 'STL',
+-    '18': 'BLK',
+-    '19': 'TO'
+-}
+-
+-def authenticate_yahoo_api(path = "/etc/secrets/keypair.json"):
+-    # Load keypair.json
+-    keypair_file_path = path
+-    
+-    if os.path.exists(keypair_file_path):
+-        with open(keypair_file_path, "r") as f:
+-            keypair = json.load(f)
+-    else:
+-        raise FileNotFoundError(f"Secret file {keypair_file_path} not found.")
+-    
+-    # Manually initialize OAuth2 with token_time & token_type to prevent verifier request
+-    try:
+-        sc = OAuth2(
+-            keypair["consumer_key"], 
+-            keypair["consumer_secret"], 
+-            access_token=keypair["access_token"], 
+-            refresh_token=keypair["refresh_token"],
+-            token_time=keypair["token_time"],
+-            token_type=keypair["token_type"]
+-        )
+-    
+-        # Refresh token if expired
+-        if not sc.token_is_valid():
+-            print("🔄 Refreshing expired token...")
+-            sc.refresh_access_token()
+-    
+-            # Save the updated token
+-            with open(keypair_file_path, "w") as f:
+-                json.dump(sc.credentials, f)
+-            print("✅ Token refreshed and saved!")
+-    except Exception as e:
+-        raise RuntimeError(f"OAuth authentication failed: {str(e)}")
+-
+-     # get game object
+-    gm = yfa.Game(sc, 'nba')
+-    
+-    # get league ids (could be multiple if you're in more than 1)
+-    leagues = gm.league_ids()
+-    
+-    # get the league object
+-    lg = gm.to_league(leagues[0])
+-
+-    return lg
+-    
+-# grabs everyone's stats and data regarding week n using the matchups function
+-def overall_weekly_matchup_stats(lg, week_num):
+-    """
+-    Fetches and processes weekly matchup stats from Yahoo Fantasy API.
+-    Returns a DataFrame with structured data for all teams in that week.
+-    """
+-    
+-    matchups = lg.matchups(week=week_num)
+-    matchup_keys = list(matchups['fantasy_content']['league'][1]['scoreboard']['0']['matchups'].keys())
+-
+-    temp = []
+-
+-    for key in matchup_keys:
+-        if key != 'count':
+-            t1 = matchups['fantasy_content']['league'][1]['scoreboard']['0']['matchups'][str(key)]['matchup']['0']['teams']['1']['team']
+-            t2 = matchups['fantasy_content']['league'][1]['scoreboard']['0']['matchups'][str(key)]['matchup']['0']['teams']['0']['team']
+-            temp.append(t1)
+-            temp.append(t2)
+-
+-    list_of_dfs = []
+-
+-    for i in range(len(temp)):
+-        data = temp[i]
+-        # Initialize the output dictionary with relevant columns
+-        output = {
+-            "week": None,
+-            "team_key": None,
+-            "team_id": None,
+-            "name": None,
+-            "remaining_games": None,
+-            "live_games": None,
+-            "completed_games": None
+-        }
+-
+-        # Populate the dictionary
+-        team_stats_dict = {label: None for label in stat_labels.values()}
+-
+-        for item in data[0]:
+-            # Extract flat fields
+-            if "team_key" in item:
+-                output["team_key"] = item["team_key"]
+-            if "team_id" in item:
+-                output["team_id"] = item["team_id"]
+-            if "name" in item:
+-                output["name"] = item["name"]
+-
+-        for item in data:
+-            if isinstance(item, dict):
+-                # Extract nested fields
+-                if "team_stats" in item:
+-                    output["week"] = item['team_stats']["week"]
+-                    for stat in item["team_stats"]["stats"]:
+-                        stat_id = stat["stat"]["stat_id"]
+-                        if stat_id in stat_labels:
+-                            team_stats_dict[stat_labels[stat_id]] = stat["stat"]["value"]
+-                if "team_remaining_games" in item:
+-                    output["remaining_games"] = item["team_remaining_games"]["total"]["remaining_games"]
+-                    output["live_games"] = item["team_remaining_games"]["total"]["live_games"]
+-                    output["completed_games"] = item["team_remaining_games"]["total"]["completed_games"]
+-
+-        # Merge team stats into output dictionary
+-        output.update(team_stats_dict)
+-
+-        # Convert to a single-row DataFrame
+-        df = pd.DataFrame([output])
+-        list_of_dfs.append(df)
+-
+-    # Concatenate them vertically
+-    result = pd.concat(list_of_dfs, ignore_index=True)
+-
+-    # Convert relevant columns to numeric types
+-    categories = ['week', 'team_id', 'remaining_games', 'live_games', 'completed_games',
+-                  'FG%', 'FT%', '3PTM', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TO']
+-
+-    for col in categories:
+-        result[col] = pd.to_numeric(result[col], errors='coerce')
+-
+-    stat_categories = ['FG%', 'FT%', '3PTM', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TO']
+-
+-    # Rank each team within each category (lower is better for TO, higher is better for others)
+-    for category in stat_categories:
+-        if category == 'TO':  # Reverse ranking for TO since lower is better
+-            result[category + '_Rank'] = result[category].rank(ascending=True)
+-        else:
+-            result[category + '_Rank'] = result[category].rank(ascending=False)
+-
+-    # Sum the ranks to get a total score (lower total rank is better)
+-    result['Aggregate Rank'] = result[[cat + '_Rank' for cat in stat_categories]].sum(axis=1)
+-
+-    # Create a new column 'Adjusted_Rank' by ranking the 'Aggregate Rank' column
+-    result['Adjusted_Rank'] = result['Aggregate Rank'].rank(ascending=True, method='min')
+-
+-    # Convert the ranks to integers
+-    result['Adjusted_Rank'] = result['Adjusted_Rank'].astype(int)
+-
+-    # Sort teams by their total rank
+-    result = result.sort_values(by='Adjusted_Rank')
+-    
+-    return result
+-
+-def get_full_season_stats(lg):
+-    curr_week_num = lg.current_week()
+-    weekly_stats = [overall_weekly_matchup_stats(lg, i) for i in range(1, curr_week_num + 1)]
+-    final = pd.concat(weekly_stats, ignore_index=True)
+-    return final
+-
+-def get_standings(lg):
+-    df = pd.DataFrame(lg.standings())
+-    outcome_df = pd.json_normalize(df['outcome_totals'])
+-    standings = pd.concat([df.drop(columns=['outcome_totals', 'team_key']), outcome_df], axis=1)
+-    return standings
+-
+-def extract_stat_winners(data):
+-    """
+-    Extracts the count of stat_winner occurrences for each matchup.
+-    """
+-    results = {}
+-    matchups = data.get("0", {}).get("matchups", {})
+-
+-    for matchup_id, matchup_data in matchups.items():
+-        if not isinstance(matchup_data, dict):
+-            continue
+-
+-        matchup = matchup_data.get("matchup", {})
+-        stat_winners = matchup.get("stat_winners", [])
+-
+-        team_win_count = Counter(
+-            stat_winner["stat_winner"]["winner_team_key"]
+-            for stat_winner in stat_winners
+-            if isinstance(stat_winner, dict) and "stat_winner" in stat_winner and "winner_team_key" in stat_winner["stat_winner"]
+-        )
+-        results[matchup_id] = dict(team_win_count)
+-
+-    return results
+-
+-def get_matchups_df(lg):
+-    curr_week_num = lg.current_week()
+-    matchups = lg.matchups(week=curr_week_num)
+-    test1 = matchups['fantasy_content']['league'][1]['scoreboard']
+-    matchup_winners = extract_stat_winners(test1)  # Example usage
+-    
+-    # Flatten matchup_winners into a list of dictionaries
+-    flat_matchup_winners = []
+-    for matchup_id, winners in matchup_winners.items():
+-        teams = list(winners.keys())
+-        scores = list(winners.values())
+-    
+-        if scores[0] >= scores[1]:
+-            team_a, team_b = teams[0], teams[1]
+-            score_a, score_b = scores[0], scores[1]
+-        else:
+-            team_a, team_b = teams[1], teams[0]
+-            score_a, score_b = scores[1], scores[0]
+-    
+-        winner = team_a if score_a > score_b else "Tie"
+-    
+-        flat_matchup_winners.append({
+-            "Matchup": f"{team_ids[team_a]} vs. {team_ids[team_b]}",
+-            "Score": f"{score_a} - {score_b}",
+-            "Lead": team_ids[winner] if winner != "Tie" else "Tie"
+-        })
+-    
+-    df_matchups = pd.DataFrame(flat_matchup_winners)
+-    return df_matchups
+-
+-
+-def get_team_logos(lg, team_ids):
+-    logos = {team_name: lg.to_team(key).details()["team_logos"][0]["team_logo"]["url"]
+-        for key, team_name in team_ids.items()}
+-    team_logos = pd.DataFrame(logos.items(), columns=["Team", "Logo URL"])
+-    return team_logos
+diff --git a/pytest.ini b/pytest.ini
+new file mode 100644
+index 0000000..6a12ec2
+--- /dev/null
++++ b/pytest.ini
+@@ -0,0 +1,5 @@
++[pytest]
++testpaths = tests
++pythonpath = .
++filterwarnings =
++    ignore::DeprecationWarning
+diff --git a/render.yaml b/render.yaml
+index 5e71760..500ccf8 100644
+--- a/render.yaml
++++ b/render.yaml
+@@ -1,12 +1,22 @@
+-services:
+-  - name: nba-fantasy-dashboard
+-    type: web
+-    runtime: python
+-    repo: https://github.com/rsandan/nba-fantasy-dashboard
+-    branch: main
+-    plan: free
+-    buildCommand: pip install -r requirements.txt
+-    startCommand: streamlit run app.py
+-    envVars:
+-      - key: KEYPAIR_JSON
+-        sync: false
++services:
++  - name: nba-fantasy-dashboard
++    type: web
++    runtime: python
++    repo: https://github.com/rsandan/nba-fantasy-dashboard
++    branch: main
++    plan: free
++    buildCommand: pip install -r requirements.txt
++    startCommand: streamlit run app.py --server.port $PORT --server.address 0.0.0.0
++    envVars:
++      - key: PYTHON_VERSION
++        value: 3.11.9
++      # Yahoo OAuth JSON (consumer_key, consumer_secret, access_token, refresh_token,
++      # token_time, token_type). Alternatively mount it as the secret file keypair.json.
++      - key: KEYPAIR_JSON
++        sync: false
++      # Optional: pin the league. Otherwise the newest NBA league on the account is used.
++      - key: YAHOO_LEAGUE_ID
++        sync: false
++      # Optional: set to 1 to serve the synthetic demo league (no Yahoo calls).
++      - key: FANTASY_DEMO
++        value: "0"
+diff --git a/requirements-dev.txt b/requirements-dev.txt
+new file mode 100644
+index 0000000..69b3c42
+--- /dev/null
++++ b/requirements-dev.txt
+@@ -0,0 +1,2 @@
++-r requirements.txt
++pytest>=8
+diff --git a/requirements.txt b/requirements.txt
+index 0a5f64b..c83b9b4 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -1,10 +1,10 @@
+-yahoo_oauth
+-yahoo_fantasy_api
+-streamlit
+-boto3
+-nba_api
+-matplotlib
+-plotly
+-pandas
+-numpy
+-seaborn
++# Data sources
++yahoo_oauth>=2.1
++yahoo_fantasy_api>=2.12
++nba_api>=1.10
++# App + analytics
++streamlit>=1.50
++pandas>=2.2
++numpy>=1.26
++plotly>=5.20
++tzdata>=2024.1
+diff --git a/streamlit.py b/streamlit.py
+deleted file mode 100644
+index 79c5a34..0000000
+--- a/streamlit.py
++++ /dev/null
+@@ -1,275 +0,0 @@
+-import streamlit as st
+-import pandas as pd
+-import numpy as np
+-import os
+-import plotly.express as px
+-from datetime import datetime
+-import pytz
+-from nba_api.stats.endpoints import playergamelog
+-from nba_api.stats.static import players
+-
+-from logic import (
+-    authenticate_yahoo_api,
+-    get_full_season_stats,
+-    get_standings,
+-    get_matchups_df,
+-    get_team_logos,
+-    team_ids  # if you need the mapping
+-)
+-
+-# Page Configuration
+-st.set_page_config(
+-    page_title="Season 2 of Love Island (NBA)",
+-    layout="wide",
+-    initial_sidebar_state="expanded"
+-)
+-
+-# Sidebar Navigation
+-
+-# Get the absolute path of the logo
+-logo_path = os.path.join(os.path.dirname(__file__), "ryanlogo.png")
+-st.logo(
+-    logo_path,
+-    link="https://rsandan.github.io",
+-    size="large"
+-)
+-st.sidebar.title("🌐 Navigation")
+-pages = ["🏠 Home", "⛹🏽 Multi-player comparison", "🗣️ Free Agency"]
+-selection = st.sidebar.radio("Go to", pages)
+-
+-# Get Current EST Time
+-est = pytz.timezone('US/Eastern')
+-current_time = datetime.now(est).strftime("%B %d, %Y - %I:%M %p")
+-
+-# Streamlit App
+-st.title("Season 2 of Love Island (NBA)")
+-
+-# Authenticate and get league object
+-lg = authenticate_yahoo_api()
+-curr_week = lg.current_week()
+-
+-# Load data / Fetch dataframes
+-final_df = get_full_season_stats(lg)
+-standings = get_standings(lg)
+-df_matchups = get_matchups_df(lg)
+-team_logos = get_team_logos(lg, team_ids)
+-
+-# Format column names for standings and matchups
+-standings.columns = standings.columns.str.replace("_", " ").str.title()
+-standings["Record"] = standings["Wins"].astype(str) + "-" + standings["Losses"].astype(str) + "-" + standings["Ties"].astype(str)
+-standings = standings.drop(columns=["Playoff Seed", "Games Back", "Wins", "Losses", "Ties", "Percentage"])
+-df_matchups.columns = df_matchups.columns.str.replace("_", " ").str.title()
+-
+-# Define columns to exclude from formatting
+-exclude_columns = ["FG%", "FT%", "3PTM", "PTS", "REB", "AST", "STL", "BLK", "TO"]
+-
+-# Custom formatting for final_df columns: do not change rank columns.
+-def format_col(col):
+-    if col.endswith("_Rank"):
+-        return col
+-    elif col in exclude_columns:
+-        return col
+-    else:
+-        return col.replace("_", " ").title()
+-
+-final_df.columns = [format_col(col) for col in final_df.columns]
+-
+-
+-# --------------- 🏠 HOME PAGE ---------------
+-if selection == "🏠 Home":
+-    # Update Stats Button - Reloads Streamlit Script
+-    if st.button("🔄 Update Stats"):
+-        st.rerun()  # Reloads the script to refresh data
+-    # Convert logos into a list (for grid placement)
+-    logo_urls = team_logos["Logo URL"].tolist()
+-    
+-    # Create a row of images using markdown (CSS for tight spacing)
+-    logo_html = "<div style='display: flex; justify-content: flex-start; gap: 10px;'>"
+-    for url in logo_urls:
+-        logo_html += f"<img src='{url}' width='30' style='border-radius: 10px;'>"
+-    logo_html += "</div>"
+-
+-    # Render the HTML in Streamlit
+-    st.markdown(logo_html, unsafe_allow_html=True)
+-
+-    st.markdown(f"### Week 22 🏀")
+-    st.markdown(f"""
+-        <p style="font-size: 14px; font-style: italic; color: white; opacity: 0.7; margin-top: -10px;">
+-            Score snapshot as of {current_time} EST
+-        </p>
+-    """, unsafe_allow_html=True)
+-
+-    # Layout: Two equal columns for Leaderboard and Matchups
+-    col1, col2 = st.columns(2)
+-    with col1:
+-        st.subheader("Leaderboard")
+-        st.dataframe(standings, use_container_width=True, hide_index=True)
+-    with col2:
+-        st.subheader("Current Matchups")
+-        st.dataframe(df_matchups, use_container_width=True, hide_index=True)
+-
+-     # Place the week filter on the main page (above the statistics table)
+-    week_options = sorted(final_df['Week'].unique())
+-    selected_week = st.selectbox("Choose Week Number to filter table below:", week_options, index=len(week_options)-1)
+-
+-    # Filter the data for the selected week and sort by Adjusted_Rank
+-    week_data = final_df[final_df['Week'] == selected_week].sort_values(by=['Adjusted_Rank'], ascending=True)
+-
+-    # List of stat categories to format
+-    stat_categories = ['FG%', 'FT%', '3PTM', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TO']
+-
+-    # Combine raw values and their rank for each stat category
+-    for category in stat_categories:
+-        week_data[category] = (
+-            week_data[category].round(3).astype(str) +
+-            " (" +
+-            week_data[category + "_Rank"].astype(str) +
+-            ")"
+-        )
+-
+-    # Combine remaining/live/completed columns
+-    week_data["Rem/Live/Comp"] = week_data["Remaining Games"].astype(str) + "/" + week_data["Live Games"].astype(str) + "/" + week_data["Completed Games"].astype(str)
+-    
+-    # Combine Aggregate Rank and Adjusted Rank into a single column
+-    week_data['Adjusted Rank'] = week_data['Adjusted_Rank'].astype(str) + " (" + week_data['Aggregate Rank'].astype(str) + ")"
+-
+-   
+-    # Remove unwanted columns
+-    columns_to_remove = ["Team Key", "Team Id", "Fgm/A", "Ftm/A", "Remaining Games", "Live Games", "Completed Games", "Aggregate Rank"]
+-    
+-    # Also remove any column whose name contains "_Rank" except "Adjusted_Rank"
+-    rank_columns = [col for col in week_data.columns if "_Rank" in col]
+-    columns_to_remove.extend(rank_columns)
+-
+-    
+-    week_data = week_data.drop(columns=columns_to_remove)
+-    
+-    # Assuming week_data is your DataFrame
+-    desired_order = ['Week', 'Name', 'Rem/Live/Comp', 'Adjusted Rank', 'FG%', 'FT%', '3PTM', 'PTS', 'REB', 'AST', 'STL', 'BLK', 'TO']
+-    week_data = week_data[desired_order]
+-
+-    # Full-Width Traditional Statistics Table
+-    st.subheader("Traditional Statistics")
+-    st.markdown(f"""
+-        <p style="font-size: 14px; color: white; opacity: 0.7; margin-top: -10px;">
+-            <b>Adjusted Rank</b> – Summarizes all individual rankings into one total score. The lower the number, the better.
+-        </p>
+-    """, unsafe_allow_html=True)
+-    st.dataframe(week_data, use_container_width=True, hide_index=True)
+-
+-
+-# --------------- ⛹🏽 MULTI-PLAYER COMPARISON ---------------
+-elif selection == "⛹🏽 Multi-player comparison":
+-    st.title("⛹🏽 Multi-player comparison")
+-
+-    def get_active_players():
+-        all_players = players.get_players()
+-        active_players = {p["full_name"]: p["id"] for p in all_players if p["is_active"]}
+-        return active_players
+-
+-    active_players = get_active_players()
+-
+-    def get_player_headshot(player_id):
+-        return f"https://cdn.nba.com/headshots/nba/latest/1040x760/{player_id}.png"
+-
+-    def get_player_stats(player_id, player_name, period, mode):
+-        from nba_api.stats.endpoints import playergamelog
+-        gamelog = playergamelog.PlayerGameLog(player_id=player_id, season="2024-25", season_type_all_star="Regular Season")
+-        df = gamelog.get_data_frames()[0]
+-
+-        if df.empty:
+-            return None
+-
+-        df["GAME_DATE"] = pd.to_datetime(df["GAME_DATE"], format="%b %d, %Y", errors='coerce')
+-
+-        if period != "season":
+-            time_cutoff = pd.Timestamp.today() - pd.Timedelta(days=period)
+-            df = df[df["GAME_DATE"] >= time_cutoff]
+-
+-        relevant_stats = ["MIN", "FGM", "FGA", "FG_PCT", "FG3M",
+-                          "FG3A", "FG3_PCT", "FTM", "FTA", "FT_PCT",
+-                          "OREB", "DREB", "REB", "AST", "STL",
+-                          "BLK", "TOV", "PF", "PTS", "PLUS_MINUS"]
+-
+-        df = df[relevant_stats]
+-
+-        if mode == "Average":
+-            stats = df.mean()
+-            stats["FG_PCT"] = round(df.loc[df["FGA"] > 0, "FG_PCT"].mean(), 3) if (df["FGA"] > 0).any() else 0
+-            stats["FG3_PCT"] = round(df.loc[df["FG3A"] > 0, "FG3_PCT"].mean(), 3) if (df["FG3A"] > 0).any() else 0
+-            stats["FT_PCT"] = round(df.loc[df["FTA"] > 0, "FT_PCT"].mean(), 3) if (df["FTA"] > 0).any() else 0
+-            for col in stats.index:
+-                if col not in ["FG_PCT", "FG3_PCT", "FT_PCT"]:
+-                    stats[col] = round(stats[col], 1)
+-        else:
+-            stats = df.sum()
+-            stats = stats.drop(["FG_PCT", "FG3_PCT", "FT_PCT"])
+-            stats = stats.round(1)
+-
+-        stats["Player"] = player_name
+-        stats["Headshot"] = get_player_headshot(player_id)
+-        return stats
+-
+-    def compare_players(player_list, period, mode):
+-        all_stats = []
+-        for player in player_list:
+-            player_id = active_players.get(player)
+-            if player_id:
+-                stats = get_player_stats(player_id, player, period, mode)
+-                if stats is not None:
+-                    all_stats.append(stats)
+-        return pd.DataFrame(all_stats) if all_stats else None
+-
+-    num_players = st.selectbox("Select Number of Players to Compare", options=[2, 3, 4, 5], index=0)
+-
+-    selected_players = []
+-    for i in range(num_players):
+-        player = st.selectbox(f"Select Player {i+1}", list(active_players.keys()), key=f"player_{i}")
+-        selected_players.append(player)
+-
+-    period_options = {
+-        "Last 7 Days (Average)": (7, "Average"),
+-        "Last 7 Days (Total)": (7, "Total"),
+-        "Last 14 Days (Average)": (14, "Average"),
+-        "Last 14 Days (Total)": (14, "Total"),
+-        "Last 30 Days (Average)": (30, "Average"),
+-        "Last 30 Days (Total)": (30, "Total"),
+-        "Full Season (Average)": ("season", "Average"),
+-        "Full Season (Total)": ("season", "Total")
+-    }
+-    selected_period_label = st.selectbox("Select Time Period", list(period_options.keys()), index=0)
+-    period_value, mode = period_options[selected_period_label]
+-
+-    if st.button("Compare Players"):
+-        with st.spinner("Fetching player stats..."):
+-            combined_df = compare_players(selected_players, period_value, mode)
+-            if combined_df is not None:
+-                st.success("Comparison Generated!")
+-                ordered_columns = ["Headshot", "Player"] + [col for col in combined_df.columns if col not in ["Headshot", "Player"]]
+-                combined_df = combined_df[ordered_columns]
+-
+-                def image_formatter(url):
+-                    return f'<img src="{url}" width="75">'
+-
+-                pct_columns = {"FG_PCT": "FG%", "FG3_PCT": "3PT FG%", "FT_PCT": "FT%"}
+-                combined_df.rename(columns=pct_columns, inplace=True)
+-
+-                st.markdown(
+-                    combined_df.to_html(
+-                        escape=False,
+-                        formatters={"Headshot": image_formatter},
+-                        index=False
+-                    ),
+-                    unsafe_allow_html=True
+-                )
+-            else:
+-                st.error("No game data available for the selected players and period.")
+-
+-
+-# Footer
+-st.markdown("""
+-    <style>
+-        .footer {position: fixed; bottom: 0; width: 100%; text-align: center; padding: 10px;}
+-    </style>
+-    <div class='footer'>© 2025 Ryan Sandan</div>
+-""", unsafe_allow_html=True)
+diff --git a/tests/test_app.py b/tests/test_app.py
+new file mode 100644
+index 0000000..b02d84b
+--- /dev/null
++++ b/tests/test_app.py
+@@ -0,0 +1,26 @@
++"""Smoke test: every page renders without exceptions on the demo league."""
++from pathlib import Path
++
++import pytest
++
++pytest.importorskip("streamlit")
++from streamlit.testing.v1 import AppTest  # noqa: E402
++
++ROOT = Path(__file__).resolve().parents[1]
++PAGES = ["page_home", "page_power", "page_matchup_lab", "page_values", "page_trade",
++         "page_streaming", "page_free_agency", "page_compare"]
++
++
++@pytest.mark.parametrize("page", PAGES)
++def test_page_renders(page, monkeypatch):
++    monkeypatch.setenv("FANTASY_DEMO", "1")
++    src = (ROOT / "app.py").read_text().replace("nav.run()", f"{page}()")
++    script = ROOT / f"_pagetest_{page}.py"   # same dir so relative assets (logo) resolve
++    script.write_text(src)
++    try:
++        at = AppTest.from_file(str(script), default_timeout=300)
++        at.run()
++        assert not at.exception, [e.value for e in at.exception]
++        assert at.title, "page should render a title"
++    finally:
++        script.unlink(missing_ok=True)
+diff --git a/tests/test_core.py b/tests/test_core.py
+new file mode 100644
+index 0000000..76f73dc
+--- /dev/null
++++ b/tests/test_core.py
+@@ -0,0 +1,234 @@
++"""Unit tests for parsing, valuation, simulation and league analytics (no network)."""
++from datetime import date
++
++import numpy as np
++import pandas as pd
++import pytest
++
++from fantasy import demo, nba_data, power, trade, transactions
++from fantasy import matchup_model as mm
++from fantasy.categories import BY_NAME, CATEGORY_NAMES, compare
++from fantasy.valuation import value_players
++from fantasy.yahoo_client import parse_scoreboard, parse_transactions
++
++
++@pytest.fixture(scope="module")
++def league():
++    return demo.make_league(seed=7)
++
++
++# ------------------------------------------------------------------ categories
++def test_compare_turnovers_lower_wins():
++    assert compare(20, 25, BY_NAME["TO"]) == 1.0
++    assert compare(25, 20, BY_NAME["TO"]) == 0.0
++
++
++def test_compare_percentage_ties_at_display_precision():
++    assert compare(0.47249, 0.47201, BY_NAME["FG%"]) == 0.5   # both display .472
++    assert compare(0.4730, 0.4720, BY_NAME["FG%"]) == 1.0
++
++
++def test_compare_undefined_percentage_loses():
++    assert compare(float("nan"), 0.45, BY_NAME["FT%"]) == 0.0
++    assert compare(float("nan"), float("nan"), BY_NAME["FT%"]) == 0.5
++
++
++# --------------------------------------------------------------------- parsing
++def test_scoreboard_round_trip_keeps_makes_and_attempts(league):
++    wk = league["team_weeks"]
++    week = wk[wk["week"] == 3]
++    parsed = parse_scoreboard(demo.to_yahoo_scoreboard(week))
++    assert len(parsed) == len(week)
++    merged = parsed.merge(week, on="team_key", suffixes=("", "_true"))
++    for col in ("FGM", "FGA", "FTM", "FTA", "PTS", "TOV", "games", "remaining_games"):
++        np.testing.assert_allclose(merged[col], merged[f"{col}_true"])
++    # opponents are symmetric
++    pairs = dict(zip(parsed["team_key"], parsed["opponent_key"]))
++    assert all(pairs[pairs[k]] == k for k in pairs)
++    assert set(parsed["status"]) == {"postevent"}
++
++
++def test_scoreboard_handles_blank_stats(league):
++    wk = league["team_weeks"]
++    pre = wk[wk["status"] == "preevent"]
++    pre = pre[pre["week"] == pre["week"].min()]
++    parsed = parse_scoreboard(demo.to_yahoo_scoreboard(pre))
++    assert (parsed["FGA"] == 0).all() and parsed["FG%"].isna().all()
++
++
++def _tx(tid, ttype, ts, players):
++    body = {str(i): {"player": [[{"player_key": f"466.p.{pid}"}, {"player_id": str(pid)},
++                                 {"name": {"full": name}}, {"editorial_team_abbr": "GS"}], {"transaction_data": td}]}
++            for i, (pid, name, td) in enumerate(players)}
++    body["count"] = len(players)
++    return {"transaction_key": f"466.l.1.tr.{tid}", "transaction_id": str(tid), "type": ttype,
++            "status": "successful", "timestamp": str(ts), "players": body}
++
++
++def test_parse_transactions_add_drop_and_trade():
++    raw = [
++        _tx(1, "add/drop", 1_761_000_000, [
++            (10, "A Guy", [{"type": "add", "source_type": "freeagents", "destination_type": "team",
++                            "destination_team_key": "t.1", "destination_team_name": "One"}]),
++            (11, "B Guy", {"type": "drop", "source_type": "team", "source_team_key": "t.1",
++                           "source_team_name": "One", "destination_type": "waivers"})]),
++        _tx(2, "trade", 1_761_100_000, [
++            (12, "C Guy", {"type": "trade", "source_type": "team", "source_team_key": "t.2",
++                           "destination_team_key": "t.1", "destination_team_name": "One"})]),
++    ]
++    df = parse_transactions(raw)
++    assert list(df["action"]) == ["add", "drop", "trade"]
++    assert list(df["team_key"]) == ["t.1", "t.1", "t.1"]
++    assert df["timestamp"].dt.tz is not None
++
++
++# ------------------------------------------------------------------ NBA helpers
++@pytest.mark.parametrize("d,expected", [(date(2026, 9, 27), "2026-27"), (date(2027, 3, 1), "2026-27"),
++                                        (date(2027, 7, 1), "2026-27"), (date(2027, 8, 15), "2027-28")])
++def test_season_for(d, expected):
++    assert nba_data.season_for(d) == expected
++
++
++def test_normalize_name_handles_accents_and_suffixes():
++    assert nba_data.normalize_name("Nikola Jokić") == nba_data.normalize_name("Nikola Jokic")
++    assert nba_data.normalize_name("Jaren Jackson Jr.") == "jaren jackson"
++    assert nba_data.normalize_name("De'Aaron Fox") == "deaaron fox"
++
++
++def test_summarize_logs_uses_volume_weighted_pct():
++    logs = pd.DataFrame({"FGM": [1, 4], "FGA": [1, 16], "FTM": [0, 0], "FTA": [0, 0], "PTS": [2, 8]})
++    out = nba_data.summarize_logs(logs)
++    assert out["FG%"] == pytest.approx(5 / 17, abs=1e-3)   # not mean(1.0, 0.25) = 0.625
++
++
++def test_blend_weights_follow_games_played(league):
++    b = nba_data.blend_seasons(league["players"], league["players_prior"], k=15)
++    row = b[b["GP_CUR"] > 0].iloc[0]
++    assert row["blend_w"] == pytest.approx(row["GP_CUR"] / (row["GP_CUR"] + 15))
++    no_cur = b[b["GP_CUR"] == 0]
++    assert (no_cur["blend_w"] == 0).all()
++
++
++# ------------------------------------------------------------------- valuation
++def _toy_players():
++    base = dict(GP=60, TEAM="BOS", MIN=30, FTM=3, FTA=4, FG3M=2, PTS=20, REB=6, AST=4, STL=1, BLK=1, TOV=2)
++    rows = [dict(PLAYER_ID=i, PLAYER_NAME=f"P{i}", FGM=5, FGA=10, **base) for i in range(40)]
++    rows.append(dict(PLAYER_ID=100, PLAYER_NAME="Low volume 60%", FGM=1.8, FGA=3, **base))
++    rows.append(dict(PLAYER_ID=101, PLAYER_NAME="High volume 55%", FGM=11, FGA=20, **base))
++    rows.append(dict(PLAYER_ID=102, PLAYER_NAME="Turnover machine", FGM=5, FGA=10, **{**base, "TOV": 5}))
++    return pd.DataFrame(rows)
++
++
++def test_percentage_value_is_volume_weighted():
++    res = value_players(_toy_players(), n_teams=4, roster_size=10).table.set_index("PLAYER_ID")
++    assert res.at[101, "z_FG%"] > res.at[100, "z_FG%"] > 0
++
++
++def test_turnovers_are_negative_value():
++    res = value_players(_toy_players(), n_teams=4, roster_size=10).table.set_index("PLAYER_ID")
++    assert res.at[102, "z_TO"] < 0
++
++
++def test_punts_drop_category_from_total(league):
++    players = nba_data.blend_seasons(league["players"], league["players_prior"])
++    full = value_players(players, punts=())
++    punted = value_players(players, punts=("FT%",))
++    t = punted.table
++    assert np.allclose(t["value"], t[[f"z_{c}" for c in CATEGORY_NAMES if c != "FT%"]].sum(axis=1))
++    assert punted.punts == ("FT%",) and full.pool_size == punted.pool_size
++
++
++# ------------------------------------------------------------------- simulation
++def test_identical_teams_are_coin_flips(league):
++    model = mm.fit_team_model(league["team_weeks"])
++    t = model.teams()[0]
++    model.mu.loc["clone"] = model.mu.loc[t]
++    model.games_per_week["clone"] = model.games_per_week[t]
++    model.n_eff["clone"] = model.n_eff[t]
++    sim = mm.simulate_matchup(model, t, "clone", n_sims=20000, seed=1)
++    assert sim.p_win + 0.5 * sim.p_tie == pytest.approx(0.5, abs=0.02)
++    assert (sim.cat_prob.sub(0.5).abs() < 0.03).all()
++
++
++def test_banked_week_is_deterministic(league):
++    model = mm.fit_team_model(league["team_weeks"])
++    a, b = model.teams()[:2]
++    big = dict(FGM=500, FGA=900, FTM=200, FTA=220, FG3M=150, PTS=1350, REB=600, AST=350, STL=120, BLK=80, TOV=40)
++    small = dict(FGM=300, FGA=800, FTM=100, FTA=200, FG3M=50, PTS=750, REB=300, AST=150, STL=40, BLK=20, TOV=120)
++    sim = mm.simulate_matchup(model, a, b, big, small, games_a=0, games_b=0, n_sims=500)
++    assert sim.p_win == 1.0 and (sim.cat_prob == 1.0).all()
++
++
++def test_covariance_is_positive_definite(league):
++    model = mm.fit_team_model(league["team_weeks"])
++    np.linalg.cholesky(model.cov)
++    assert model.diagnostics["cov_source"].startswith("pooled")
++
++
++def test_backtest_beats_baselines_and_is_calibrated(league):
++    bt = mm.backtest(league["team_weeks"], n_sims=600)
++    m = bt["metrics"].set_index("model")
++    assert m.at["Model", "category_brier"] < m.at["Empirical all-play baseline", "category_brier"]
++    assert m.at["Model", "category_BSS"] > 0.1
++    cal = bt["calibration"]
++    weighted_gap = np.average((cal["mean_pred"] - cal["observed"]).abs(), weights=cal["n"])
++    assert weighted_gap < 0.08
++
++
++# ------------------------------------------------------------------ league tools
++def test_all_play_records_are_consistent(league):
++    ap = power.all_play(league["team_weeks"])
++    s = ap["summary"]
++    n_weeks = league["team_weeks"].query("status == 'postevent'")["week"].nunique()
++    games = s["ap_record"].str.split("-", expand=True).astype(int).sum(axis=1)
++    assert (games == n_weeks * (len(s) - 1)).all()
++    assert ap["category_rates"].stack().between(0, 1).all()
++    # all-play is zero-sum across the league
++    assert s["ap_pct"].mean() == pytest.approx(0.5, abs=1e-9)
++
++
++def test_playoff_odds_sum_to_playoff_spots(league):
++    tw = league["team_weeks"]
++    model = mm.fit_team_model(tw)
++    odds = power.playoff_odds(model, tw, tw[tw["status"] != "postevent"], 6, "head", 21, n_sims=400)
++    assert odds["playoff_odds"].sum() == pytest.approx(6.0)
++    assert odds["top_seed_odds"].sum() == pytest.approx(1.0)
++
++
++def test_trade_evaluation_is_antisymmetric(league):
++    players = nba_data.blend_seasons(league["players"], league["players_prior"])
++    res = value_players(players)
++    ids = res.table["PLAYER_ID"].tolist()
++    one = trade.evaluate_trade(res.table, [ids[3]], [ids[10], ids[30]], res.replacement)
++    back = trade.evaluate_trade(res.table, [ids[10], ids[30]], [ids[3]], res.replacement)
++    assert one.raw_delta == pytest.approx(-back.raw_delta)
++    # the 2-for-1 receiver must drop someone: priced at replacement level
++    assert np.allclose(one.table["roster_spot_adj"], -res.replacement.values)
++
++
++def test_context_weights_peak_at_coin_flip():
++    w = trade.context_weights(pd.Series({"FG%": 0.5, "FT%": 0.95, "PTS": 0.05}), punts=["AST"])
++    assert w["FG%"] == pytest.approx(1.0)
++    assert w["FT%"] < 0.5 and w["PTS"] < 0.5 and w["AST"] == 0
++
++
++def test_streaming_prefers_more_games_for_equal_players(league):
++    players = nba_data.blend_seasons(league["players"], league["players_prior"])
++    res = value_players(players)
++    fa = league["free_agents"].head(30)
++    games = pd.Series(1.0, index=demo.NBA_TEAMS)
++    board = trade.streaming_board(fa, res.table, games, trade.context_weights(None), res.replacement)
++    top = board.iloc[0]
++    games2 = games.copy()
++    games2[top["TEAM"]] = 4
++    board2 = trade.streaming_board(fa, res.table, games2, trade.context_weights(None), res.replacement)
++    assert board2.loc[board2["name"] == top["name"], "stream_score"].iloc[0] == pytest.approx(4 * top["stream_score"])
++
++
++def test_hold_pairing(league):
++    tx = league["transactions"]
++    holds = transactions.pair_adds_drops(tx)
++    assert (holds["hold_days"] >= 0).all()
++    assert len(holds) == (tx["action"] == "add").sum()
++    act = transactions.team_activity(tx, holds)
++    assert act["stream_rate"].between(0, 1).all()
+-- 
+2.43.0
+

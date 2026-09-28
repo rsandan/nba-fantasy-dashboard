@@ -2,143 +2,118 @@
 ![Header Image](./cover.jpg)
 [Click here to check it out](https://nba-fantasy-dashboard.onrender.com/)
 
-
-⚠️ Warning: Free Tier Instance Downtime
-
-This project is hosted on Render.com, using their free tier instance. One important limitation of the free tier is automatic spin-down due to inactivity.
-- If there are no active requests for a period of time, the instance will stop running.
-- When a new request is made after inactivity, Render will restart the instance, which can cause a delay of ~50+ seconds before the app is available again.
-- So if no one has entered the site in a while, the first person who does will experience a blank webpage basically... but give it a min or two and refresh the page and you'll see it 👍🏽
-
----
-## Introduction
-In my first run around with playing fantasy hoops, I wanted to explore the capabilities of Yahoo's Fantasy API and see what insightful extractions I can make out of it — analyzing matchup data (head-to-head), free agency transaction data, looking for patterns of players added/dropped at certain times, etc. This analysis initially started in a local `google colab` notebook, where I used `ngrok` python library as an initial mock up. However, each time I spun up the site, it'd be a new url. So now that I landed on something acceptable, I wanted to host it online so I could share it with my friends. Hosting this project on `render.com` made me learn a lot of things, with a lot of *debugging sessions*. `Google/StackOverflow/ChatGPT` were my main resources in finding solutions. 
-
-## 🚀 What I learned:
-- OAuth 2.0 (specifically OAuth initialization without requiring user input/login)
-- Writing Environment Variables & Secret Files for Yahoo’s access tokens and refresh tokens (no more Enter Verifier: errors 🎉)
-- Successful Deployment (via Render.com)
-- Understanding Yahoo Fantasy API Structure for retrieving stats, standings, and player movements
-- Hosting Web Apps on Render and working with authentication challenges
-- [Yahoo Fantasy API documentation](https://yahoo-fantasy-api.readthedocs.io/en/latest/yahoo_fantasy_api.html)
-- [Render.com Documentation](https://render.com/docs)
-
-## 📊 Yahoo! Fantasy League Details
-**League Name**: Season 2 of Love Island (NBA)
-**League Details**: H2H 10T 9CAT
-  - H2H - Head to head (Weekly matchup)
-  - 10T - 10 Team
-  - 9CAT - 9 Categories (FT%, FG%, 3PTM, PTS, TREB, AST, STL, BLK, TO)
-
-    
-### Below is a ChatGPT response to my prompt: "So all in all what did I learn after all my debugging sessions?" 
-- ***I will include details on what I learned about Yahoo's Fantasy API in the near future***
-
-# **Yahoo! NBA Fantasy Dashboard Deployment Guide**
-### This is a **Yahoo NBA Fantasy API dashboard**, hosted on **Render.com**. This guide covers **key lessons learned** during development and deployment. ###
-
-## **1️⃣ OAuth2 Authentication with Yahoo Fantasy API**
-
-### **What I Learned**
-- Yahoo Fantasy API uses **OAuth2**, which requires **client credentials** (client ID, client secret). So make sure you create a Yahoo Developer account.
-- A **keypair.json** file is needed to store **access tokens** and **refresh tokens**.
-- **Access tokens expire**, so we need to **refresh tokens automatically**.
-- The `redirect_uri=oob` (out-of-band) **is deprecated**—we need to specify a valid redirect URI in Yahoo Developer settings.
-- **Manually initializing OAuth2** in Python helps avoid interactive prompts:
-  
-  ```python
-  sc = OAuth2(
-      keypair["consumer_key"],
-      keypair["consumer_secret"],
-      access_token=keypair["access_token"],
-      refresh_token=keypair["refresh_token"],
-      token_time=keypair["token_time"],  
-      token_type=keypair["token_type"]  
-  )
-  ```
-
-- **Refreshing the token** automatically when expired:
-  
-  ```python
-  if not sc.token_is_valid():
-      sc.refresh_access_token()
-  ```
+⚠️ Hosted on Render's free tier, so the app spins down when idle. If nobody has visited in a while, the first load takes ~50 seconds. Give it a minute and refresh.
 
 ---
 
-## **2️⃣ Environment Variables & Secrets Management**
+## What this is
 
-### **What I Learned**
-- **Do not hardcode API keys** (use environment variables or secret files).
-- In **Render.com**, store secrets in **Environment Variables** or `/etc/secrets/`.
-- Access them in Python like this:
-  
-  ```python
-  import os
-  NGROK_AUTH_TOKEN = os.getenv("NGROK_AUTH_TOKEN")
-  ```
+A Streamlit site for my friends' Yahoo Fantasy Basketball league (**Love Island (NBA)**, H2H, 10 teams, 9 categories: FG%, FT%, 3PTM, PTS, REB, AST, STL, BLK, TO).
 
-- **Updating keypair.json** requires replacing the secret file manually.
+Season 1 was a scoreboard: standings, this week's matchups, and a "sum of category ranks" table. For season 3 I rebuilt it as a decision tool with a real model underneath:
 
----
+| Page | What it answers | Method |
+|---|---|---|
+| **This week** | Who's going to win each matchup, category by category? | Monte Carlo simulation of the rest of the week (banked stats + remaining games) |
+| **Power rankings** | Who's actually good, and who's been lucky? | All-play records, schedule luck, model-based power rating, playoff odds |
+| **Matchup lab** | Team A vs Team B in a neutral week? How good is the model? | Same simulator + a walk-forward backtest with calibration |
+| **Player values** | Who helps a 9-cat team most, for my build? | Replacement-aware z-scores with punt support, early-season shrinkage |
+| **Trade analyzer** | Should I take this deal? Would they? | z-score deltas weighted by each team's swing categories, roster-spot pricing |
+| **Streaming board** | Who do I add today? | Value above replacement × games left, weighted by which categories are still in play this week |
+| **Free agency** | Who works the wire and does it pay off? | Add/drop pairing, hold times, stream rate, timing heatmap, activity vs all-play |
+| **Player comparison** | Side by side for 2 to 5 players | League-wide per-game lines, volume-weighted percentages |
 
-## **3️⃣ Why We Removed Ngrok** 
+Everything runs without credentials in **demo mode** on a synthetic league: `FANTASY_DEMO=1 streamlit run app.py`.
 
-### **What I Learned**
-- **Ngrok is useful for local testing**, but it’s not needed for Render hosting.
-- Free Ngrok accounts allow **only one active tunnel at a time**, which caused `ERR_NGROK_108`.
-- Render **already provides a public URL**, so **Ngrok is unnecessary**.
+## Modeling notes
 
-### **Steps Taken**
-✅ **Removed all Ngrok references** from the code.  
-✅ **Used Render's default URL** instead of manually tunneling traffic.  
-✅ **Updated the start command** for Render.
+### 1. The matchup model (`fantasy/matchup_model.py`)
+Each team-week is reduced to **per player-game rates** over 11 additive components (FGA, FG%, FTA, FT%, 3PTM, PTS, REB, AST, STL, BLK, TO). Working per game instead of per week separates roster quality from schedule volume, since Yahoo tells us each team's games remaining in advance.
 
----
+- **Team means:** a recency-weighted average (6-week half-life) shrunk toward a prior worth 3 weeks of data. The prior is the team's **current roster projection** (rescaled to the league's observed per-started-game level), so week-1 predictions and post-trade teams are sensible.
+- **Noise:** week-to-week residuals are pooled across the league into an 11×11 covariance, rescaled by games played, and regularized (30% shrinkage of off-diagonals). Categories are correlated: a high-volume week lifts PTS, 3PTM, FGA *and* TO together. Treating them as independent overstates sweeps.
+- **Parameter uncertainty:** simulations add the posterior variance of each team's mean (`1 / (weeks of evidence + prior weeks)`), so early-season probabilities aren't overconfident. For season simulations that uncertainty is drawn once per simulated season, because a team's true strength doesn't re-roll every week.
+- **Percentages are simulated correctly:** draw attempts and make rate, compute makes, then divide. Totals are rounded to integers and percentages to Yahoo's 3-decimal display precision, so category ties happen at realistic rates (they're common in BLK and STL).
 
-## **4️⃣ Deploying to Render.com**
+**Backtest (Matchup lab):** walk-forward. For every completed week *w*, fit on weeks before *w* only and predict every category of every matchup before tipoff. It reports Brier score, log loss, Brier skill score vs a coin flip, an empirical "compare past weeks directly" baseline, and a reliability curve. On the synthetic league the model scores a category Brier skill score of roughly 0.28 versus about 0.09 for the empirical baseline, and the calibration curve tracks the diagonal. Real-league numbers show up on the page once five weeks are complete.
 
-### **What I Learned**
-- Create a **`render.yaml`** file to define deployment settings.
-- Store API keys in **Render's Environment Variables** or **Secret Files**.
-- **Start Command for Streamlit apps**:
-  
-  ```bash
-  streamlit run app.py --server.port $PORT --server.address 0.0.0.0
-  ```
-  
-- **Debugging Render Logs** helps fix deployment issues.
+### 2. Player valuation (`fantasy/valuation.py`)
+- **Replacement-aware pool:** z-scores are measured against the top `teams × roster spots` players, chosen iteratively, not against all ~550 NBA players (that inflates everyone).
+- **Percentages use impact:** `(player% − pool%) × attempts`. A 60% shooter on 3 FGA barely moves a weekly FG%; a 52% shooter on 20 FGA moves it a lot.
+- **Punting** removes a category from the total *and* from pool selection.
+- **Early-season shrinkage:** each player's current line is blended with last season using `w = GP / (GP + 15)`, so a hot five-game start doesn't top the board. Before opening night this makes the page a draft board built on last season.
+- **Availability-adjusted value** discounts players who miss games.
 
----
+### 3. League analytics (`fantasy/power.py`, `fantasy/transactions.py`)
+- **All-play:** every week, every team is scored against *all* opponents. The gap between actual and all-play win% is **schedule luck**.
+- **Playoff odds:** 2,000 simulated seasons using the real remaining schedule and the league's scoring format (`head` = every category counts in the standings, `headone` = one result per matchup).
+- **Trades:** category deltas are weighted by `0.25 + 0.75 × 4p(1−p)`, where *p* is the team's all-play win rate in that category. Swing categories matter most; locked or punted ones barely count. Uneven trades are priced at replacement level for the roster spot opened or lost. The analyzer shows both sides' view, so you can find deals that help both teams.
+- **Wire activity:** each add is paired with the same team's next drop of that player. Hold time is censored for players still rostered, so medians aren't biased short.
 
-## **5️⃣ Using Git Properly**
+## Fixes to the season-1 code
 
-### **What I Learned**
-- **Avoid pushing secrets to GitHub** (use `.gitignore`).
-- Commands to remove sensitive files from GitHub history:
-  
-  ```bash
-  git rm --cached keypair.json ngrok_token.txt
-  echo "keypair.json" >> .gitignore
-  echo "ngrok_token.txt" >> .gitignore
-  git commit -m "Removed sensitive files from GitHub"
-  git push origin main
-  ```
-  
-- Keep **environment variables secure** instead of storing secrets in the repo.
+- Removed the hard-coded league key and `team_ids` dict. The league and team names are discovered at runtime, so the app survives Yahoo's new league key every season.
+- Removed the hard-coded `season="2024-25"` and `"Week 22"`.
+- The scoreboard parser now keeps `FGM/A` and `FTM/A`. The old one dropped them, which made correct percentage aggregation impossible.
+- Player comparison averaged per-game FG% (so 1-for-1 counted the same as 10-for-25). It now uses total makes ÷ total attempts.
+- OAuth tokens refresh into a writable temp copy. Render mounts `/etc/secrets` read-only, so in-place refreshes failed once the one-hour token expired.
+- **Caching:** completed weeks are cached for the life of the process, the live week for 5 minutes, and NBA stats for 6 hours. Previously every page view re-fetched every week from Yahoo.
+- Renamed the entry point from `streamlit.py` to `app.py`. A script named `streamlit.py` shadows the `streamlit` package on import.
+- Built the "Free Agency" page, which was listed in the sidebar but never implemented.
+- Removed the unused dependencies (`boto3`, `matplotlib`, `seaborn`).
 
----
+## Project layout
 
-## **Conclusion**
+```
+app.py                     Streamlit UI (8 pages), caching layer
+fantasy/
+  categories.py            9-cat definitions, tie/NaN-aware category comparison
+  yahoo_client.py          OAuth, league discovery, pure JSON parsers (scoreboard, transactions)
+  nba_data.py              nba_api per-game stats, schedule, season blending, name matching
+  matchup_model.py         team-strength model, Monte Carlo simulator, walk-forward backtest
+  power.py                 all-play, luck, power ratings, playoff odds
+  valuation.py             replacement-aware z-scores, punts
+  trade.py                 trade evaluation, context weights, streaming board
+  transactions.py          add/drop pairing, activity, timing
+  charts.py                Plotly figures (dark theme, colorblind-checked palette)
+  data_source.py           live vs. demo switch
+  demo.py                  synthetic league generator (tests + demo mode)
+tests/                     34 tests: parsing, math, model skill/calibration, every page renders
+```
 
-🔥 **Now the app is fully deployed on Render.com** and can be shared with others!  
-💡 **Biggest lesson:** OAuth2, token handling, and proper deployment practices are crucial for real-world web applications.
+## Running it
 
----
+```bash
+pip install -r requirements-dev.txt
+FANTASY_DEMO=1 streamlit run app.py        # no credentials needed
+pytest -q                                  # 34 tests, ~15s
+```
 
-### **Next Steps**
-- ✅ **Share the Render URL** with friends.  
-- ✅ **Monitor logs for any errors**.  
-- ✅ **Add new features** (e.g., more data visualizations).  
+**Live mode** needs Yahoo OAuth credentials: create an app at developer.yahoo.com, complete the OAuth flow once locally with `yahoo_oauth`, and provide the resulting JSON (`consumer_key`, `consumer_secret`, `access_token`, `refresh_token`, `token_time`, `token_type`) via one of:
 
----
+- `KEYPAIR_JSON` or `YAHOO_OAUTH_JSON` environment variable (raw JSON), or
+- a secret file at `/etc/secrets/keypair.json` (Render) or `./keypair.json` (local, git-ignored).
+
+Optional: `YAHOO_LEAGUE_ID` (or `YAHOO_LEAGUE_KEY`) to pin a league. Otherwise the newest NBA league on the account is used. If Yahoo can't be reached, the site falls back to the demo league and says why instead of crashing.
+
+**Render:** `render.yaml` sets the start command to `streamlit run app.py --server.port $PORT --server.address 0.0.0.0`. If the service was created by hand, update the start command in the Render dashboard to match.
+
+## Known limitations
+
+- Per-game rates assume Yahoo's `completed_games` counts started player-games. Daily lineup decisions (benching, IL moves) aren't modeled beyond that.
+- The backtest plugs in the games each team actually got. The schedule is known ahead of time, but late injuries aren't, so treat backtest skill as a slight upper bound.
+- Yahoo's playoff tiebreakers aren't exposed in the API, so exact ties in the playoff simulation are broken at random.
+- stats.nba.com rate-limits cloud IPs. Calls retry with backoff, and pages degrade gracefully if it's down.
+
+## Season-1 notes (OAuth + deployment lessons)
+
+<details>
+<summary>What I learned getting the first version live</summary>
+
+- Yahoo's API uses OAuth2. Tokens expire after an hour, so refresh them automatically (`sc.token_is_valid()` / `sc.refresh_access_token()`).
+- `redirect_uri=oob` is deprecated. Set a real redirect URI in the Yahoo developer settings.
+- Keep secrets out of Git (`.gitignore`, environment variables, Render secret files).
+- ngrok is handy for local demos, but Render already provides a public URL.
+- Render logs are the fastest way to debug deploys.
+- [Yahoo Fantasy API docs](https://yahoo-fantasy-api.readthedocs.io/en/latest/yahoo_fantasy_api.html) · [Render docs](https://render.com/docs)
+</details>
