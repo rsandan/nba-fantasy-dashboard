@@ -10,18 +10,29 @@
 
 A Streamlit site for my friends' Yahoo Fantasy Basketball league (**Love Island (NBA)**, H2H, 10 teams, 9 categories: FG%, FT%, 3PTM, PTS, REB, AST, STL, BLK, TO).
 
-Season 1 was a scoreboard: standings, this week's matchups, and a "sum of category ranks" table. For season 3 I rebuilt it as a decision tool with a real model underneath:
+Season 1 was a scoreboard. Season 3 is a phone app: almost everyone opens it from an iPhone,
+so it's built like one.
 
-| Page | What it answers | Method |
-|---|---|---|
-| **This week** | Who's going to win each matchup, category by category? | Monte Carlo simulation of the rest of the week (banked stats + remaining games) |
-| **Power rankings** | Who's actually good, and who's been lucky? | All-play records, schedule luck, model-based power rating, playoff odds |
-| **Matchup lab** | Team A vs Team B in a neutral week? How good is the model? | Same simulator + a walk-forward backtest with calibration |
-| **Player values** | Who helps a 9-cat team most, for my build? | Replacement-aware z-scores with punt support, early-season shrinkage |
-| **Trade analyzer** | Should I take this deal? Would they? | z-score deltas weighted by each team's swing categories, roster-spot pricing |
-| **Streaming board** | Who do I add today? | Value above replacement × games left, weighted by which categories are still in play this week |
-| **Free agency** | Who works the wire and does it pay off? | Add/drop pairing, hold times, stream rate, timing heatmap, activity vs all-play |
-| **Player comparison** | Side by side for 2 to 5 players | League-wide per-game lines, volume-weighted percentages |
+| Tab | What it answers |
+|---|---|
+| **This Week** | How's my matchup going? Win probability up top, then all nine categories with who's leading, the projection, and your chance to win each one. Other matchups tap open below. |
+| **Standings** | Record, all-play and schedule luck · **Power** (schedule-neutral strength, strong/weak categories) · **Playoffs** (odds with the playoff line drawn in). |
+| **Players** | **Pickups**: who to add today, weighted toward the categories still in play in your matchup · **Rankings**: searchable 9-cat values with punt and stat-window filters. |
+| **Trade** | Pick what you send and what you get. One verdict, both sides' view, and a per-category breakdown. |
+
+### Mobile design
+
+- **Bottom tab bar**, thumb-reachable, instead of a hidden sidebar menu.
+- **Your team, remembered.** Pick it once and it's saved in the link (`?team=3`). Add the page to your
+  home screen and it opens straight to your matchup, full screen, with its own icon.
+- **Lists, not spreadsheets.** Every table became an inset grouped list. Nothing scrolls sideways.
+- **Follows the phone's light/dark setting**, using iOS system colors.
+- **No keyboard unless you're searching.** Teams and categories are tap targets (radio lists, pills,
+  segmented controls). Every row is at least 44pt tall, inputs are 16px so Safari doesn't zoom.
+- **Color is never the only signal.** Every +/− has a sign and every probability has a number.
+
+Cut for mobile: the matchup lab and its backtest charts, the free-agency analytics page, and player
+comparison. The analytics behind them still live in `fantasy/` and are still covered by the tests.
 
 Everything runs without credentials in **demo mode** on a synthetic league: `FANTASY_DEMO=1 streamlit run app.py`.
 
@@ -35,7 +46,7 @@ Each team-week is reduced to **per player-game rates** over 11 additive componen
 - **Parameter uncertainty:** simulations add the posterior variance of each team's mean (`1 / (weeks of evidence + prior weeks)`), so early-season probabilities aren't overconfident. For season simulations that uncertainty is drawn once per simulated season, because a team's true strength doesn't re-roll every week.
 - **Percentages are simulated correctly:** draw attempts and make rate, compute makes, then divide. Totals are rounded to integers and percentages to Yahoo's 3-decimal display precision, so category ties happen at realistic rates (they're common in BLK and STL).
 
-**Backtest (Matchup lab):** walk-forward. For every completed week *w*, fit on weeks before *w* only and predict every category of every matchup before tipoff. It reports Brier score, log loss, Brier skill score vs a coin flip, an empirical "compare past weeks directly" baseline, and a reliability curve. On the synthetic league the model scores a category Brier skill score of roughly 0.28 versus about 0.09 for the empirical baseline, and the calibration curve tracks the diagonal. Real-league numbers show up on the page once five weeks are complete.
+**Backtest (`mm.backtest`, run in the test suite):** walk-forward. For every completed week *w*, fit on weeks before *w* only and predict every category of every matchup before tipoff. It reports Brier score, log loss, Brier skill score vs a coin flip, an empirical "compare past weeks directly" baseline, and a reliability curve. On the synthetic league the model scores a category Brier skill score of roughly 0.28 versus about 0.09 for the empirical baseline, and the calibration curve tracks the diagonal.
 
 ### 2. Player valuation (`fantasy/valuation.py`)
 - **Replacement-aware pool:** z-scores are measured against the top `teams × roster spots` players, chosen iteratively, not against all ~550 NBA players (that inflates everyone).
@@ -55,17 +66,16 @@ Each team-week is reduced to **per player-game rates** over 11 additive componen
 - Removed the hard-coded league key and `team_ids` dict. The league and team names are discovered at runtime, so the app survives Yahoo's new league key every season.
 - Removed the hard-coded `season="2024-25"` and `"Week 22"`.
 - The scoreboard parser now keeps `FGM/A` and `FTM/A`. The old one dropped them, which made correct percentage aggregation impossible.
-- Player comparison averaged per-game FG% (so 1-for-1 counted the same as 10-for-25). It now uses total makes ÷ total attempts.
+- The old player comparison averaged per-game FG% (so 1-for-1 counted the same as 10-for-25). All percentages now use total makes ÷ total attempts.
 - OAuth tokens refresh into a writable temp copy. Render mounts `/etc/secrets` read-only, so in-place refreshes failed once the one-hour token expired.
 - **Caching:** completed weeks are cached for the life of the process, the live week for 5 minutes, and NBA stats for 6 hours. Previously every page view re-fetched every week from Yahoo.
 - Renamed the entry point from `streamlit.py` to `app.py`. A script named `streamlit.py` shadows the `streamlit` package on import.
-- Built the "Free Agency" page, which was listed in the sidebar but never implemented.
 - Removed the unused dependencies (`boto3`, `matplotlib`, `seaborn`).
 
 ## Project layout
 
 ```
-app.py                     Streamlit UI (8 pages), caching layer
+app.py                     Streamlit app: 4 tabs, caching layer, "my team" state
 fantasy/
   categories.py            9-cat definitions, tie/NaN-aware category comparison
   yahoo_client.py          OAuth, league discovery, pure JSON parsers (scoreboard, transactions)
@@ -75,10 +85,11 @@ fantasy/
   valuation.py             replacement-aware z-scores, punts
   trade.py                 trade evaluation, context weights, streaming board
   transactions.py          add/drop pairing, activity, timing
-  charts.py                Plotly figures (dark theme, colorblind-checked palette)
+  ui.py                    iOS-style components (lists, scoreboard, tab bar), light/dark CSS
   data_source.py           live vs. demo switch
   demo.py                  synthetic league generator (tests + demo mode)
-tests/                     34 tests: parsing, math, model skill/calibration, every page renders
+static/                    home-screen icon
+tests/                     34 tests: parsing, math, model skill/calibration, every tab renders
 ```
 
 ## Running it

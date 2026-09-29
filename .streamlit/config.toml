@@ -1,12 +1,29 @@
+# iOS system colors. Defining both light and dark makes the app follow the phone's appearance.
 [theme]
-base = "dark"
-primaryColor = "#3987e5"
-backgroundColor = "#111110"
-secondaryBackgroundColor = "#1a1a19"
+font = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif"
+baseRadius = "0.75rem"
+showWidgetBorder = false
+
+[theme.light]
+primaryColor = "#007aff"
+backgroundColor = "#f2f2f7"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#000000"
+borderColor = "#d1d1d6"
+
+[theme.dark]
+primaryColor = "#0a84ff"
+backgroundColor = "#000000"
+secondaryBackgroundColor = "#1c1c1e"
 textColor = "#ffffff"
+borderColor = "#38383a"
 
 [server]
 headless = true
+enableStaticServing = true
+
+[client]
+toolbarMode = "minimal"
 
 [browser]
 gatherUsageStats = false

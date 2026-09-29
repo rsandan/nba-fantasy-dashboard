@@ -1,26 +1,31 @@
-"""Love Island (NBA) fantasy dashboard.
+"""Love Island (NBA) fantasy dashboard. Built for iPhone first.
 
-Run:  streamlit run app.py              (live, needs Yahoo OAuth secrets)
+Run:  streamlit run app.py                  (live, needs Yahoo OAuth secrets)
       FANTASY_DEMO=1 streamlit run app.py   (synthetic league, no credentials)
+
+Four tabs, one job each:
+  This Week   how is my matchup going, category by category
+  Standings   record, schedule-neutral power, playoff odds
+  Players     who to pick up today, and a searchable 9-cat ranking
+  Trade       should I take this deal
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date
 
-import numpy as np
 import pandas as pd
 import streamlit as st
 
-from fantasy import charts, nba_data
 from fantasy import matchup_model as mm
-from fantasy import power, trade
-from fantasy import transactions as txa
+from fantasy import nba_data, power, trade
+from fantasy import ui
 from fantasy.categories import CATEGORIES, CATEGORY_NAMES, category_value, compare
 from fantasy.data_source import connect
+from fantasy.ui import e, pct, signed
 from fantasy.valuation import Z_COLS, value_players
 
-st.set_page_config(page_title="Love Island (NBA)", page_icon="🏀", layout="wide",
-                   initial_sidebar_state="expanded")
+st.set_page_config(page_title="Love Island", page_icon="🏀", layout="centered",
+                   initial_sidebar_state="collapsed")
 ET = "America/New_York"
 
 
@@ -70,16 +75,9 @@ def load_future_weeks(key: str, first: int, last: int) -> pd.DataFrame:
 
 
 def team_weeks() -> pd.DataFrame:
-    """Weeks 1..current. The fetch loop is cheap after the first load (per-week cache)."""
     frames = [load_final_week(KEY, w) for w in range(META.start_week, META.current_week)]
     frames.append(load_live_week(KEY, META.current_week))
-    df = pd.concat([f for f in frames if not f.empty], ignore_index=True)
-    return df
-
-
-@st.cache_data(ttl=900, show_spinner=False)
-def load_transactions(key: str) -> pd.DataFrame:
-    return SOURCE.transactions()
+    return pd.concat([f for f in frames if not f.empty], ignore_index=True)
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
@@ -108,7 +106,7 @@ SEASON = nba_data.season_for(TODAY)
 PRIOR = nba_data.previous_season(SEASON)
 
 
-@st.cache_data(ttl=21600, show_spinner="Blending current and prior season…")
+@st.cache_data(ttl=21600, show_spinner="Loading player stats…")
 def blended_players(season: str) -> pd.DataFrame:
     return nba_data.blend_seasons(load_players(season), load_players(nba_data.previous_season(season)))
 
@@ -125,14 +123,14 @@ def matched_rosters(key: str, values: pd.DataFrame) -> pd.DataFrame:
     return trade.match_players(ros, values) if not ros.empty else ros
 
 
-@st.cache_data(ttl=300, show_spinner="Fitting team-strength model…")
+@st.cache_data(ttl=300, show_spinner="Crunching the numbers…")
 def fit_model(tw: pd.DataFrame, priors: pd.DataFrame | None, team_keys: tuple) -> mm.TeamModel:
     return mm.fit_team_model(tw, teams=list(team_keys), priors=priors)
 
 
-@st.cache_data(ttl=None, max_entries=8, show_spinner="Backtesting the model week by week…")
-def run_backtest(done: pd.DataFrame) -> dict:
-    return mm.backtest(done, n_sims=1500)
+@st.cache_data(ttl=300, show_spinner="Simulating this week…")
+def week_sims(_model: mm.TeamModel, live: pd.DataFrame, model_sig: str) -> list:
+    return mm.live_matchups(_model, live, n_sims=4000)
 
 
 @st.cache_data(ttl=300, show_spinner="Simulating the rest of the season…")
@@ -141,7 +139,7 @@ def season_sim(_model: mm.TeamModel, tw: pd.DataFrame, future: pd.DataFrame, mod
                               META.playoff_start_week, n_sims=2000)
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+@st.cache_data(ttl=300, show_spinner="Rating teams…")
 def ratings(_model: mm.TeamModel, model_sig: str) -> pd.Series:
     return power.power_ratings(_model, n_sims=1200)
 
@@ -165,228 +163,246 @@ def core():
                 model=model, ap=ap, sig=model_signature(tw))
 
 
-def banked_score(a: pd.Series, b: pd.Series) -> tuple[int, int, int]:
-    res = [compare(category_value(a, c), category_value(b, c), c) for c in CATEGORIES]
-    return sum(r == 1 for r in res), sum(r == 0 for r in res), sum(r == 0.5 for r in res)
+# ===================================================================== "who am I"
+# The user's team lives in session state and is mirrored into the URL (?team=3), so a
+# bookmark or an Add to Home Screen icon opens straight to their own matchup.
+NAMES = dict(zip(load_teams(KEY)["team_key"], load_teams(KEY)["team_name"]))
+
+
+def _short(team_key: str) -> str:
+    return str(team_key).split(".t.")[-1]
+
+
+def my_team() -> str | None:
+    me = st.session_state.get("me")
+    if me in NAMES:
+        return me
+    q = st.query_params.get("team")
+    for k in NAMES:
+        if q and _short(k) == q:
+            st.session_state["me"] = k
+            return k
+    return None
+
+
+def _pick_team(widget_key: str):
+    st.session_state["me"] = st.session_state[widget_key]
+
+
+def team_picker(widget_key: str, label: str = "Your team"):
+    keys = list(NAMES)
+    me = my_team()
+    st.radio(label, keys, index=keys.index(me) if me in keys else None, format_func=NAMES.get,
+             key=widget_key, on_change=_pick_team, args=(widget_key,))
+
+
+# ========================================================================= chrome
+def title_bar(title: str, sub: str = "", live: bool = False):
+    with st.container(horizontal=True, vertical_alignment="bottom", key="titlebar"):
+        st.html(ui.large_title(title, sub, live))
+        with st.popover("", icon=":material/account_circle:", type="tertiary", key="profile"):
+            team_picker("me_profile")
+            st.caption("Saved in this page's link. In Safari tap Share, then **Add to Home Screen**, "
+                       "and it opens straight to your team.")
+            st.caption("By Ryan Sandan · [rsandan.github.io](https://rsandan.github.io)")
+    if SOURCE.is_demo and FALLBACK_REASON and FALLBACK_REASON != "FANTASY_DEMO is set":
+        st.caption(f"Yahoo is unreachable, so this is a demo league. ({FALLBACK_REASON})")
 
 
 def fmt_cat(value: float, cat_name: str) -> str:
     if value != value:
         return "–"
-    return f"{value:.3f}".lstrip("0") if cat_name in ("FG%", "FT%") else f"{value:.0f}"
+    return f"{value:.3f}".lstrip("0") if cat_name in ("FG%", "FT%") else f"{value:,.0f}"
 
 
-def pct(x) -> str:
-    """Probability label that never claims certainty a simulation can't support."""
-    if x is None or x != x:
-        return "–"
-    if x < 0.005:
-        return "<1%"
-    if x > 0.995:
-        return ">99%"
-    return f"{x:.0%}"
+def banked_score(a: pd.Series, b: pd.Series) -> tuple[int, int, int]:
+    res = [compare(category_value(a, c), category_value(b, c), c) for c in CATEGORIES]
+    return sum(r == 1 for r in res), sum(r == 0 for r in res), sum(r == 0.5 for r in res)
 
 
-# ========================================================================== header
-def header(title: str, subtitle: str | None = None):
-    st.title(title)
-    now = datetime.now(pd.Timestamp.now(tz=ET).tz).strftime("%b %d, %Y · %I:%M %p ET")
-    src = "Demo league (synthetic data)" if SOURCE.is_demo else "Live from Yahoo Fantasy"
-    st.caption(f"Week {META.current_week} · {src} · snapshot {now}"
-               + (f" · {subtitle}" if subtitle else ""))
-    if SOURCE.is_demo and FALLBACK_REASON and FALLBACK_REASON != "FANTASY_DEMO is set":
-        st.info(f"Couldn't reach Yahoo, so this is the demo league. Reason: `{FALLBACK_REASON}`")
+def oriented(sim, live: pd.DataFrame, me: str | None) -> dict:
+    """Put `me` on the left when I'm in this matchup."""
+    a = live[live["team_key"] == sim.team_a].iloc[0]
+    b = live[live["team_key"] == sim.team_b].iloc[0]
+    if me is not None and sim.team_b == me:
+        return dict(ka=sim.team_b, kb=sim.team_a, a=b, b=a, pa=sim.p_loss, pb=sim.p_win, tie=sim.p_tie,
+                    cat=1 - sim.cat_prob, proj_a=sim.proj_b, proj_b=sim.proj_a)
+    return dict(ka=sim.team_a, kb=sim.team_b, a=a, b=b, pa=sim.p_win, pb=sim.p_loss, tie=sim.p_tie,
+                cat=sim.cat_prob, proj_a=sim.proj_a, proj_b=sim.proj_b)
+
+
+def scoreboard(o: dict, card: bool = True) -> str:
+    """Apple-Sports-style matchup card: win probability up top, nine categories below."""
+    started = o["a"]["status"] != "preevent"
+    na, nb = NAMES.get(o["ka"], o["ka"]), NAMES.get(o["kb"], o["kb"])
+    w, l, t = banked_score(o["a"], o["b"]) if started else (0, 0, 0)
+    a_fav = o["pa"] >= o["pb"]
+    gl = lambda r: "?" if pd.isna(r["remaining_games"]) else f"{r['remaining_games']:.0f}"
+    tie = f" · tie {pct(o['tie'])}" if o["tie"] >= 0.01 else ""
+    html = [
+        f'<div class="hero" style="{"" if card else "background:transparent;padding:0"}">'
+        '<div class="top">'
+        f'<div><div class="tn">{e(na)}</div><div class="big {"" if a_fav else "dim"}">{pct(o["pa"])}</div></div>'
+        f'<div class="mid"><div class="score">{f"{w}–{l}–{t}" if started else "vs"}</div>'
+        f'<div class="cap">{"categories" if started else "not started"}</div></div>'
+        f'<div class="r"><div class="tn">{e(nb)}</div><div class="big {"dim" if a_fav else ""}">{pct(o["pb"])}</div></div>'
+        "</div>",
+        f'<div class="bar"><span style="width:{(o["pa"] + o["tie"] / 2) * 100:.1f}%"></span></div>',
+        f'<div class="meta">Chance to win the week · {gl(o["a"])} vs {gl(o["b"])} games left{tie}</div>',
+    ]
+    for cat in CATEGORIES:
+        va, vb = category_value(o["a"], cat), category_value(o["b"], cat)
+        pa, pb = o["proj_a"][cat.name], o["proj_b"][cat.name]
+        shown_a, shown_b = (va, vb) if started else (pa, pb)
+        lead = compare(shown_a, shown_b, cat)
+        p = float(o["cat"][cat.name])
+        proj = lambda v: f'<div class="proj">proj {fmt_cat(v, cat.name)}</div>' if started else ""
+        html.append(
+            '<div class="cat">'
+            f'<div><div class="v {"lead" if lead == 1 else ""}">{fmt_cat(shown_a, cat.name)}</div>{proj(pa)}</div>'
+            f'<div class="c"><div class="cn">{cat.name}</div>{ui.mini_bar(p)}<div class="p">{pct(p)}</div></div>'
+            f'<div class="r"><div class="v r {"lead" if lead == 0 else ""}">{fmt_cat(shown_b, cat.name)}</div>'
+            f'<div class="proj" style="text-align:right">{"proj " + fmt_cat(pb, cat.name) if started else ""}</div></div>'
+            "</div>")
+    html.append("</div>")
+    return "".join(html)
+
+
+def show_more(key: str, total: int, step: int) -> int:
+    n = st.session_state.get(key, step)
+    return min(n, total)
+
+
+def more_button(key: str, shown: int, total: int, step: int):
+    if shown < total:
+        if st.button(f"Show {min(step, total - shown)} more", key=f"{key}_btn", type="tertiary",
+                     width="stretch"):
+            st.session_state[key] = shown + step
+            st.rerun()
 
 
 # =========================================================================== pages
-def page_home():
-    header(META.name)
+def page_week():
     c = core()
-    tw, names, model, ap = c["tw"], c["names"], c["model"], c["ap"]
-    if st.button("🔄 Refresh live scores"):
-        load_live_week.clear()
-        st.rerun()
-
+    tw, model = c["tw"], c["model"]
+    me = my_team()
     live = tw[tw["week"] == META.current_week]
-    st.subheader(f"Week {META.current_week} matchups")
+    started = not live.empty and (live["status"] != "preevent").any()
+    title_bar(f"Week {META.current_week}", e(META.name), live=started and live["status"].eq("midevent").any())
+
+    if me is None:
+        ui.section("Welcome")
+        with st.container(border=False, key="onboard"):
+            team_picker("me_onboard", "Which team is yours?")
+        ui.footnote("Pick once and your matchup leads this screen. You can change it from the "
+                    "profile button up top.")
+
     if live.empty:
-        st.write("No matchups scheduled yet. Check back after the draft.")
-    else:
-        st.caption("Win probabilities come from 4,000 simulations of each matchup: what's already "
-                   "banked this week plus each team's remaining games drawn from its fitted "
-                   "per-game rates (with category correlations). Ties in a category count half.")
-        sims = mm.live_matchups(model, live, n_sims=4000)
-        cols = st.columns(2)
-        for i, sim in enumerate(sims):
-            a = live[live["team_key"] == sim.team_a].iloc[0]
-            b = live[live["team_key"] == sim.team_b].iloc[0]
-            w, l, t = banked_score(a, b) if a["status"] != "preevent" else (0, 0, 0)
-            with cols[i % 2].container(border=True):
-                na, nb = names.get(sim.team_a, sim.team_a), names.get(sim.team_b, sim.team_b)
-                st.markdown(f"**{na}** vs **{nb}**")
-                m1, m2, m3 = st.columns(3)
-                m1.metric(f"{na[:18]} win", pct(sim.p_win))
-                m2.metric("Tie", pct(sim.p_tie))
-                m3.metric(f"{nb[:18]} win", pct(sim.p_loss))
-                gl = lambda r: "?" if pd.isna(r["remaining_games"]) else f"{r['remaining_games']:.0f}"
-                st.caption(f"Current score {w}-{l}-{t} · games left {gl(a)} vs {gl(b)} · "
-                           f"projected categories {sim.exp_cats_a:.1f}–{9 - sim.exp_cats_a:.1f}")
-                rows = []
-                for cat in CATEGORIES:
-                    rows.append({"Cat": cat.name,
-                                 na[:14]: fmt_cat(category_value(a, cat), cat.name),
-                                 nb[:14]: fmt_cat(category_value(b, cat), cat.name),
-                                 "Proj": f"{fmt_cat(sim.proj_a[cat.name], cat.name)} – "
-                                         f"{fmt_cat(sim.proj_b[cat.name], cat.name)}",
-                                 "Win %": sim.cat_prob[cat.name]})
-                st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch",
-                             column_config={"Win %": st.column_config.ProgressColumn(
-                                 f"{na[:10]} wins", format="percent", min_value=0, max_value=1)})
-
-    st.subheader("Standings")
-    summ = ap["summary"]
-    if summ.empty:
-        st.write("Standings appear after the first completed week.")
+        ui.footnote("No matchups yet. They show up once the league schedule is set.")
         return
-    table = summ.assign(team=summ["team_key"].map(names))
-    rec_col = "cat_record" if META.scoring_type == "head" else "h2h_record"
-    rec_pct = "cat_pct" if META.scoring_type == "head" else "h2h_pct"
-    table = table.sort_values(rec_pct, ascending=False)
-    table.insert(0, "Rank", range(1, len(table) + 1))
-    luck = "luck_category" if META.scoring_type == "head" else "luck_matchup"
-    st.dataframe(
-        table[["Rank", "team", rec_col, rec_pct, "ap_record", "ap_pct", luck]],
-        hide_index=True, width="stretch",
-        column_config={
-            "team": "Team", rec_col: "Record", rec_pct: st.column_config.NumberColumn("Win %", format="%.3f"),
-            "ap_record": "All-play record",
-            "ap_pct": st.column_config.NumberColumn("All-play %", format="%.3f",
-                                                    help="Record if you played every team every week"),
-            luck: st.column_config.NumberColumn("Luck", format="%+.3f",
-                                                help="Actual win% minus all-play win%. Positive = soft schedule."),
-        })
+
+    sims = week_sims(model, live, c["sig"])
+    mine = [s for s in sims if me in (s.team_a, s.team_b)]
+    others = [s for s in sims if me not in (s.team_a, s.team_b)]
+
+    if mine:
+        st.html(scoreboard(oriented(mine[0], live, me)))
+        ui.footnote("Each matchup is played out 4,000 times from what's already banked plus every "
+                    "team's remaining games. The bar under each category is your chance to win it.")
+
+    ui.section("Your league" if mine else "Matchups")
+    for s in others:
+        o = oriented(s, live, None)
+        na, nb = NAMES.get(o["ka"], ""), NAMES.get(o["kb"], "")
+        with st.expander(f"{na}  {pct(o['pa'])}  ·  {pct(o['pb'])}  {nb}"):
+            st.html(scoreboard(o, card=False))
+
+    now = pd.Timestamp.now(tz=ET)
+    with st.container(horizontal=True, vertical_alignment="center", key="refresh_row"):
+        ui.footnote(f"Updated {now:%-I:%M %p} ET")
+        if st.button("Refresh", icon=":material/refresh:", type="tertiary"):
+            load_live_week.clear()
+            week_sims.clear()
+            st.rerun()
 
 
-def page_power():
-    header("Power rankings", "schedule-neutral team strength")
+def _cat_summary(rates: pd.DataFrame, team_key: str) -> str:
+    if team_key not in rates.index:
+        return ""
+    r = rates.loc[team_key].reindex(CATEGORY_NAMES).dropna()
+    strong = r[r >= 0.6].sort_values(ascending=False).index[:3].tolist()
+    weak = r[r <= 0.4].sort_values().index[:2].tolist()
+    parts = []
+    if strong:
+        parts.append("Strong " + ", ".join(strong))
+    if weak:
+        parts.append("Weak " + ", ".join(weak))
+    return " · ".join(parts) or "Balanced"
+
+
+def page_standings():
     c = core()
-    tw, names, model, ap = c["tw"], c["names"], c["model"], c["ap"]
+    tw, model, ap = c["tw"], c["model"], c["ap"]
+    me = my_team()
+    title_bar("Standings", e(META.name))
     summ = ap["summary"]
     if summ.empty:
-        st.info("Power rankings need at least one completed week.")
+        ui.footnote("Standings show up after the first week is complete.")
         return
-    pr = ratings(model, c["sig"])
-    future = load_future_weeks(KEY, META.current_week + 1, META.playoff_start_week - 1) \
-        if not SOURCE.is_demo else tw[tw["status"] == "preevent"]
-    live = tw[tw["week"] == META.current_week]
-    fut = pd.concat([live, future], ignore_index=True) if not future.empty else live
-    odds = season_sim(model, tw, fut, c["sig"]).set_index("team_key")
-    form = power.recent_form(ap["weekly"])
 
+    view = st.segmented_control("View", ["Standings", "Power", "Playoffs"], default="Standings",
+                                required=True, label_visibility="collapsed", key="stand_view",
+                                width="stretch")
     t = summ.set_index("team_key")
-    board = pd.DataFrame({
-        "Team": [names.get(k, k) for k in t.index],
-        "Power": pr.reindex(t.index).values,
-        "All-play %": t["ap_pct"].values,
-        "Form (3-wk half-life)": form.reindex(t.index).values,
-        "Luck": (t["luck_category"] if META.scoring_type == "head" else t["luck_matchup"]).values,
-        "Playoff odds": odds["playoff_odds"].reindex(t.index).values,
-        "#1 seed": odds["top_seed_odds"].reindex(t.index).values,
-        "Proj. final win %": odds["exp_win_pct"].reindex(t.index).values,
-    }, index=t.index).sort_values("Power", ascending=False)
-    board.insert(0, "Rank", range(1, len(board) + 1))
-    st.dataframe(board, hide_index=True, width="stretch", column_config={
-        "Power": st.column_config.ProgressColumn(
-            "Power", format="%.3f", min_value=0, max_value=1,
-            help="P(beating a random league opponent in a typical week), from the matchup model"),
-        "All-play %": st.column_config.NumberColumn(format="%.3f"),
-        "Form (3-wk half-life)": st.column_config.NumberColumn(format="%.3f"),
-        "Luck": st.column_config.NumberColumn(format="%+.3f"),
-        "Playoff odds": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1),
-        "#1 seed": st.column_config.NumberColumn(format="percent"),
-        "Proj. final win %": st.column_config.NumberColumn(format="%.3f"),
-    })
-    with st.expander("How these are computed"):
-        st.markdown(f"""
-- **Power** asks the matchup model how often each team beats every other team over a full week with
-  equal games, then averages. It's schedule-neutral, and early-season results are shrunk toward the
-  league average (and toward roster projections when rosters are available).
-- **All-play %** scores each completed week against *all* {META.num_teams - 1} opponents, not only the scheduled one.
-- **Luck** = actual win % − all-play win %. Over a season it mostly reflects the schedule, not skill.
-- **Playoff odds** simulate the remaining regular season 2,000 times with the real schedule and the
-  league's scoring format (`{META.scoring_type}`); top {META.num_playoff_teams} make it. Exact ties are
-  broken at random because Yahoo's tiebreakers aren't in the API.
-""")
+    head = META.scoring_type == "head"
 
-    l, r = st.columns(2)
-    with l:
-        st.subheader("Playoff odds")
-        st.plotly_chart(charts.probability_bars(
-            board.reset_index().rename(columns={"Team": "team_name"}), "Playoff odds"), width="stretch")
-    with r:
-        st.subheader("Schedule luck")
-        st.plotly_chart(charts.luck_bars(
-            board.reset_index().rename(columns={"Team": "team_name"}), "Luck"), width="stretch")
-    st.subheader("Category strength (all-play category win rate)")
-    st.caption("Blue = wins that category most weeks against the league, red = loses it. A column of "
-               "red for one team is a punt, deliberate or not.")
-    st.plotly_chart(charts.category_heatmap(ap["category_rates"], names), width="stretch")
+    if view == "Standings":
+        rec, rp = ("cat_record", "cat_pct") if head else ("h2h_record", "h2h_pct")
+        luck = t["luck_category"] if head else t["luck_matchup"]
+        order = t.sort_values(rp, ascending=False).index
+        rows = [ui.row(e(NAMES.get(k, k)),
+                       f"All-play {t.at[k, 'ap_pct']:.3f} · luck {signed(luck[k], 3)}".replace("0.", "."),
+                       t.at[k, rec], f"{t.at[k, rp]:.3f}".lstrip("0"), lead=ui.rank(i), me=k == me)
+                for i, k in enumerate(order, 1)]
+        ui.group(rows)
+        ui.footnote("<b>All-play</b> is your record if you played every team every week. "
+                    "<b>Luck</b> is the gap between that and your real record: positive means a soft schedule.")
 
+    elif view == "Power":
+        pr = ratings(model, c["sig"])
+        form = power.recent_form(ap["weekly"])
+        order = pr.reindex(t.index).sort_values(ascending=False).index
+        rates = ap["category_rates"]
+        rows = [ui.row(e(NAMES.get(k, k)), e(_cat_summary(rates, k)), pct(pr.get(k)),
+                       f"form {form.get(k, float('nan')):.3f}".replace("0.", "."),
+                       lead=ui.rank(i), me=k == me, extra=ui.mini_bar(pr.get(k, 0)))
+                for i, k in enumerate(order, 1)]
+        ui.group(rows)
+        ui.footnote("<b>Power</b> is each team's chance to beat an average league opponent in a normal "
+                    "week, from the matchup model. It ignores the schedule. <b>Form</b> weights recent weeks.")
 
-def page_matchup_lab():
-    header("Matchup lab", "any two teams, plus how well the model has predicted")
-    c = core()
-    names, model = c["names"], c["model"]
-    keys = list(names)
-    col1, col2, col3 = st.columns([2, 2, 1])
-    a = col1.selectbox("Team A", keys, format_func=names.get, index=0)
-    b = col2.selectbox("Team B", keys, format_func=names.get, index=1 if len(keys) > 1 else 0)
-    games = col3.number_input("Games each", 10, 60, int(round(model.g_ref)))
-    if a == b:
-        st.warning("Pick two different teams.")
     else:
-        sim = mm.simulate_matchup(model, a, b, games_a=games, games_b=games, n_sims=6000)
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric(f"{names[a]} win", pct(sim.p_win))
-        m2.metric("Tie", pct(sim.p_tie))
-        m3.metric(f"{names[b]} win", pct(sim.p_loss))
-        m4.metric("Expected categories", f"{sim.exp_cats_a:.1f} – {9 - sim.exp_cats_a:.1f}")
-        st.plotly_chart(charts.category_win_bars(sim.cat_prob, names[a], names[b]), width="stretch")
-        dist = pd.Series(sim.cats_a + 0.5 * sim.ties).round(1).value_counts(normalize=True).sort_index()
-        st.caption("Distribution of categories won by " + names[a] + ": " +
-                   " · ".join(f"{k:g}: {v:.0%}" for k, v in dist.items() if v >= 0.01))
-
-    st.divider()
-    st.subheader("Model backtest")
-    done = c["tw"][c["tw"]["status"] == "postevent"]
-    if done["week"].nunique() < 5:
-        st.info("The walk-forward backtest needs at least 5 completed weeks (3 to train, 2+ to test).")
-        return
-    bt = run_backtest(done)
-    met = bt["metrics"]
-    st.markdown(
-        "Walk-forward: for each week *w*, the model is fit only on weeks before *w* and predicts every "
-        "category of every matchup before the week starts. Lower Brier/log loss is better; **BSS** is "
-        "the Brier skill score versus a coin flip (0 = no skill, 1 = perfect). The empirical baseline "
-        "compares the two teams' past weekly results directly, with no model.")
-    st.dataframe(met, hide_index=True, width="stretch", column_config={
-        c_: st.column_config.NumberColumn(format="%.4f") for c_ in met.columns if c_ != "model"})
-    l, r = st.columns([3, 2])
-    with l:
-        st.plotly_chart(charts.calibration_plot(bt["calibration"]), width="stretch")
-    with r:
-        per_cat = bt["categories"].groupby("category").apply(
-            lambda d: pd.Series({"Brier (model)": np.mean((d.p_model - d.y) ** 2),
-                                 "Brier (baseline)": np.mean((d.p_baseline - d.y) ** 2)}),
-            include_groups=False).reindex(CATEGORY_NAMES)
-        st.caption("Brier score by category (lower is better). Rate stats like STL and BLK are "
-                   "noisier week to week, so expect them to be the hardest to call.")
-        st.dataframe(per_cat, width="stretch",
-                     column_config={k: st.column_config.NumberColumn(format="%.3f") for k in per_cat.columns})
+        future = load_future_weeks(KEY, META.current_week + 1, META.playoff_start_week - 1) \
+            if not SOURCE.is_demo else tw[tw["status"] == "preevent"]
+        live = tw[tw["week"] == META.current_week]
+        fut = pd.concat([live, future], ignore_index=True) if not future.empty else live
+        odds = season_sim(model, tw, fut, c["sig"]).set_index("team_key")
+        order = odds["playoff_odds"].sort_values(ascending=False).index
+        rows = []
+        for i, k in enumerate(order, 1):
+            if i == META.num_playoff_teams + 1:
+                rows.append('<div class="cut">Playoff line</div>')
+            rows.append(ui.row(e(NAMES.get(k, k)),
+                               f"Proj. {odds.at[k, 'exp_win_pct']:.3f}".replace("0.", ".") + f" · #1 seed {pct(odds.at[k, 'top_seed_odds'])}",
+                               pct(odds.at[k, "playoff_odds"]), lead=ui.rank(i), me=k == me,
+                               extra=ui.mini_bar(odds.at[k, "playoff_odds"])))
+        ui.group(rows)
+        ui.footnote(f"The rest of the season played out 2,000 times on the real schedule. "
+                    f"Top {META.num_playoff_teams} make it; exact ties are broken at random.")
 
 
-WINDOWS = {"Blended (this season shrunk to last)": ("blend", 0), "This season": ("cur", 0),
-           "Last 15 games": ("cur", 15), "Last 30 games": ("cur", 30), "Last season": ("prior", 0)}
+WINDOWS = {"Blended": ("blend", 0), "This season": ("cur", 0), "Last 15": ("cur", 15),
+           "Last 30": ("cur", 30), "Last season": ("prior", 0)}
 
 
 def window_players(label: str) -> pd.DataFrame:
@@ -394,236 +410,215 @@ def window_players(label: str) -> pd.DataFrame:
     if kind == "blend":
         return blended_players(SEASON)
     df = load_players(SEASON if kind == "cur" else PRIOR, n)
-    if not df.empty:
-        df = df.assign(GP_TOT=df["GP"])
-    return df
+    return df.assign(GP_TOT=df["GP"]) if not df.empty else df
 
 
-def page_values():
-    header("Player values", "9-cat z-scores against the rostered pool")
-    c1, c2, c3 = st.columns([2, 3, 2])
-    window = c1.selectbox("Stat window", list(WINDOWS), index=0)
-    punts = c2.multiselect("Punt categories", CATEGORY_NAMES, help="Removed from the total and from pool selection")
-    show = c3.selectbox("Show", ["All players", "Free agents only", "Rostered only"])
+def _top_cats(r: pd.Series, n: int = 2) -> str:
+    z = r[[c for c in Z_COLS if c in r.index]].astype(float)
+    return " ".join(c.replace("z_", "") for c in z.sort_values(ascending=False).index[:n] if z[c] > 0.3)
+
+
+def page_players():
+    c = core()
+    me = my_team()
+    title_bar("Players")
+    view = st.segmented_control("View", ["Pickups", "Rankings"], default="Pickups", required=True,
+                                label_visibility="collapsed", key="players_view", width="stretch")
+    photos = not SOURCE.is_demo
+    if view == "Pickups":
+        _pickups(c, me, photos)
+    else:
+        _rankings(photos)
+
+
+def _pickups(c: dict, me: str | None, photos: bool):
+    tw, model = c["tw"], c["model"]
+    live = tw[tw["week"] == META.current_week]
+    with st.popover("Ignore categories", icon=":material/tune:", type="tertiary"):
+        punts = st.pills("Ignore", CATEGORY_NAMES, selection_mode="multi", key="stream_punts",
+                         label_visibility="collapsed")
+    weights = trade.context_weights(None, punts)
+    week_end = TODAY
+    ctx = []
+    row = live[live["team_key"] == me] if me else live.iloc[0:0]
+    if not row.empty:
+        r = row.iloc[0]
+        sims = week_sims(model, live, c["sig"])
+        mine = [s for s in sims if me in (s.team_a, s.team_b)]
+        if mine:
+            o = oriented(mine[0], live, me)
+            weights = trade.context_weights(o["cat"], punts, floor=0.1)
+            swing = [k for k, p in o["cat"].items() if 0.25 <= p <= 0.75 and k not in punts]
+            ctx.append(ui.row(f"vs {e(NAMES.get(o['kb'], ''))}", "Your chance to win the week", pct(o["pa"])))
+            ctx.append(ui.row("Swing categories", e(", ".join(swing) or "None, it's mostly decided")))
+        if isinstance(r["week_end"], str) and r["week_end"]:
+            week_end = date.fromisoformat(r["week_end"])
+    if ctx:
+        ui.group(ctx)
+    elif me is None:
+        ui.footnote("Set your team with the profile button and pickups get weighted toward the "
+                    "categories still in play in your matchup.")
+
+    games_left = nba_data.games_by_team(load_schedule(SEASON), TODAY, week_end)
+    fa = load_free_agents(KEY)
+    if fa.empty or c["vals"] is None:
+        ui.footnote("No free agents or player stats yet.")
+        return
+    board = trade.streaming_board(fa, c["vals"].table, games_left, weights, c["vals"].replacement)
+    board = board[board["games_left"] > 0]
+    ui.section(f"Best adds through {week_end:%a %b %-d}")
+    n = show_more("pick_n", len(board), 15)
+    rows = []
+    for _, p in board.head(n).iterrows():
+        pos = str(p.get("eligible_positions", "")).replace(",", "/")
+        rows.append(ui.row(
+            e(p["name"]), e(f"{p.get('TEAM') or ''} · {pos} · {int(p['games_left'])} game{'s' if p['games_left'] != 1 else ''} left"),
+            signed(p["stream_score"]), f"{signed(p['weighted_per_game'], 2)} /game",
+            lead=ui.avatar(p["name"], p.get("PLAYER_ID"), photos),
+            e1_class=ui.sign_class(p["stream_score"])))
+    ui.group(rows)
+    more_button("pick_n", n, len(board), 15)
+    ui.footnote("Score = how much better than a waiver-level player each game is, times games left "
+                "this week, tilted toward your swing categories.")
+
+
+def _rankings(photos: bool):
+    with st.container(horizontal=True, vertical_alignment="center", key="searchrow"):
+        q = st.text_input("Search", placeholder="Search players", label_visibility="collapsed",
+                          key="rank_q")
+        with st.popover("", icon=":material/tune:", key="rank_filters"):
+            window = st.radio("Stats", list(WINDOWS), key="rank_window",
+                              help="Blended leans on last season until a player has ~15 games in.")
+            who = st.segmented_control("Show", ["All", "Free agents", "Rostered"], default="All",
+                                       required=True, key="rank_who")
+            punts = st.pills("Punt", CATEGORY_NAMES, selection_mode="multi", key="rank_punts")
     players = window_players(window)
     if players.empty:
-        st.warning("No NBA stats for this window yet (e.g. current season before opening night). "
-                   "Try 'Blended' or 'Last season'.")
+        ui.footnote("No stats for this window yet. Try Blended or Last season.")
         return
     res = valuation(players, tuple(punts), META.num_teams, META.roster_size)
-    table = res.table.copy()
-    teams = load_teams(KEY)
-    ros = matched_rosters(KEY, res.table)
-    owner = dict(zip(ros.get("PLAYER_ID", []), ros.get("team_key", []))) if not ros.empty else {}
-    names = dict(zip(teams["team_key"], teams["team_name"]))
-    table["Owner"] = table["PLAYER_ID"].map(owner).map(names).fillna("FA")
-    if show == "Free agents only":
-        table = table[table["Owner"] == "FA"]
-    elif show == "Rostered only":
-        table = table[table["Owner"] != "FA"]
-    q = st.text_input("Search player", "")
+    table = res.table
+    ros = matched_rosters(KEY, table)
+    owner = dict(zip(ros["PLAYER_ID"], ros["team_key"])) if not ros.empty else {}
+    table = table.assign(owner=table["PLAYER_ID"].map(owner))
+    if who == "Free agents":
+        table = table[table["owner"].isna()]
+    elif who == "Rostered":
+        table = table[table["owner"].notna()]
     if q:
-        table = table[table["PLAYER_NAME"].str.contains(q, case=False)]
-    cols = ["rank", "PLAYER_NAME", "TEAM", "Owner", "GP", "MIN", "value", "value_adj", *Z_COLS]
-    if "blend_w" in table:
-        cols.insert(6, "blend_w")
-    cfg = {z: st.column_config.NumberColumn(z.replace("z_", ""), format="%+.2f") for z in Z_COLS}
-    cfg.update({"rank": "Rk", "PLAYER_NAME": "Player", "MIN": st.column_config.NumberColumn(format="%.1f"),
-                "GP": st.column_config.NumberColumn(format="%d"),
-                "value": st.column_config.NumberColumn("Value/gm", format="%.2f",
-                                                       help="Sum of z over non-punted categories"),
-                "value_adj": st.column_config.NumberColumn("Avail-adj", format="%.2f",
-                                                           help="Value × share of team games played"),
-                "blend_w": st.column_config.NumberColumn("Cur wt", format="%.2f",
-                                                         help="Weight on this season vs last (GP/(GP+15))")})
-    st.dataframe(table[[c_ for c_ in cols if c_ in table]], hide_index=True, width="stretch",
-                 height=620, column_config=cfg)
-    st.caption(f"Pool = top {res.pool_size} players ({META.num_teams} teams × {META.roster_size} roster spots). "
-               "FG%/FT% use impact (pct above pool average × attempts), so volume matters. "
-               "Replacement level per category (z): " +
-               ", ".join(f"{k} {v:+.2f}" for k, v in res.replacement.items()))
-
-
-def _roster_picker(label: str, team_key: str, ros: pd.DataFrame, vals: pd.DataFrame, key: str) -> list:
-    if not ros.empty and team_key in set(ros["team_key"]):
-        options = ros[(ros["team_key"] == team_key) & ros["PLAYER_ID"].notna()]
-        mapping = dict(zip(options["PLAYER_ID"], options["name"]))
+        table = table[table["PLAYER_NAME"].str.contains(q, case=False, regex=False)]
+    sub = [window] + ([f"punting {', '.join(punts)}"] if punts else [])
+    ui.section(" · ".join(sub))
+    n = show_more("rank_n", len(table), 25)
+    rows = []
+    for _, p in table.head(n).iterrows():
+        own = NAMES.get(p["owner"], "Free agent") if p["owner"] == p["owner"] else "Free agent"
+        rows.append(ui.row(
+            e(p["PLAYER_NAME"]), e(f"{p.get('TEAM', '')} · {own}"),
+            signed(p["value"], 2), e(_top_cats(p)), lead=ui.rank(int(p["rank"])),
+            e1_class=ui.sign_class(p["value"])))
+    if rows:
+        ui.group(rows)
     else:
-        top = vals.head(400)
-        mapping = dict(zip(top["PLAYER_ID"], top["PLAYER_NAME"]))
-    return st.multiselect(label, list(mapping), format_func=lambda i: mapping.get(i, str(i)), key=key)
+        ui.footnote("No players match.")
+    more_button("rank_n", n, len(table), 25)
+    ui.footnote("Value per game, in z-scores against the players worth rostering in a "
+                f"{META.num_teams}-team league. FG% and FT% count shot volume.")
+
+
+def _roster_options(team_key: str, ros: pd.DataFrame, vals: pd.DataFrame) -> dict:
+    if not ros.empty and team_key in set(ros["team_key"]):
+        o = ros[(ros["team_key"] == team_key) & ros["PLAYER_ID"].notna()]
+        return dict(zip(o["PLAYER_ID"], o["name"]))
+    top = vals.head(400)
+    return dict(zip(top["PLAYER_ID"], top["PLAYER_NAME"]))
 
 
 def page_trade():
-    header("Trade analyzer", "category-aware, roster-spot-aware")
     c = core()
-    names, ap = c["names"], c["ap"]
-    keys = list(names)
-    col1, col2 = st.columns(2)
-    me = col1.selectbox("Your team", keys, format_func=names.get)
-    them = col2.selectbox("Trade partner", [k for k in keys if k != me], format_func=names.get)
-    punts = st.multiselect("Your punts", CATEGORY_NAMES, key="trade_punts")
+    ap = c["ap"]
+    me = my_team()
+    title_bar("Trade")
+    if me is None:
+        ui.section("First, your team")
+        team_picker("me_trade", "Your team")
+        return
+    punts = st.session_state.get("trade_punts") or []
     res = valuation(c["players"], tuple(punts), META.num_teams, META.roster_size)
     ros = matched_rosters(KEY, res.table)
-    give = _roster_picker("You give", me, ros, res.table, "give")
-    get = _roster_picker("You get", them, ros, res.table, "get")
-    if not give and not get:
-        st.caption("Pick players on both sides. Rosters load from Yahoo; before the draft you can "
-                   "choose from the top 400 players.")
+
+    ui.section("You send")
+    mine_opts = _roster_options(me, ros, res.table)
+    give = st.multiselect("You send", list(mine_opts), format_func=lambda i: mine_opts.get(i, str(i)),
+                          placeholder="Players from your roster", label_visibility="collapsed", key="give",
+                          select_all=False, max_selections=5)
+    ui.section("Trade partner")
+    others = [k for k in NAMES if k != me]
+    them = st.pills("Partner", others, format_func=NAMES.get, key="partner",
+                    label_visibility="collapsed")
+    if them is None:
         return
+    ui.section("You receive")
+    their_opts = _roster_options(them, ros, res.table)
+    get = st.multiselect("You receive", list(their_opts), format_func=lambda i: their_opts.get(i, str(i)),
+                         placeholder=f"Players from {NAMES[them]}", label_visibility="collapsed",
+                         key=f"get_{them}", select_all=False, max_selections=5)
+    with st.expander("Punting any categories?"):
+        st.pills("Punts", CATEGORY_NAMES, selection_mode="multi", key="trade_punts",
+                 label_visibility="collapsed")
+    if not give and not get:
+        return
+
     rates = ap["category_rates"]
     w_me = trade.context_weights(rates.loc[me] if me in rates.index else None, punts)
     w_them = trade.context_weights(rates.loc[them] if them in rates.index else None)
     mine = trade.evaluate_trade(res.table, give, get, res.replacement, w_me)
     theirs = trade.evaluate_trade(res.table, get, give, res.replacement, w_them)
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Your weighted Δz", f"{mine.weighted_delta:+.2f}", f"raw {mine.raw_delta:+.2f}", delta_color="off")
-    m2.metric(f"{names[them]} weighted Δz", f"{theirs.weighted_delta:+.2f}", f"raw {theirs.raw_delta:+.2f}",
-              delta_color="off")
-    m3.metric("Verdict", mine.verdict.split(":")[0])
-    st.write(mine.verdict)
-    if mine.weighted_delta > 0 and theirs.weighted_delta > 0:
-        st.success("Both sides gain on their own weights: a genuine fit trade, the easiest kind to get accepted.")
-    st.dataframe(mine.table, width="stretch", column_config={
-        k: st.column_config.NumberColumn(format="%+.2f") for k in mine.table.columns})
-    st.caption("Weights: `0.25 + 0.75 × 4p(1−p)` where p is your all-play win rate in the category, so swing "
-               "categories count most and locked/punted ones least. Roster-spot adj prices the extra waiver "
-               "pickup (or forced drop) in uneven trades at replacement level.")
-
-
-def page_streaming():
-    header("Streaming board", "who to add for the rest of this week")
-    c = core()
-    names, tw, model = c["names"], c["tw"], c["model"]
-    me = st.selectbox("Your team", list(names), format_func=names.get)
-    live = tw[tw["week"] == META.current_week]
-    row = live[live["team_key"] == me]
-    punts = st.multiselect("Ignore categories", CATEGORY_NAMES, key="stream_punts")
-    weights = trade.context_weights(None, punts)
-    week_end = TODAY
-    if not row.empty:
-        r = row.iloc[0]
-        opp = live[live["team_key"] == r["opponent_key"]]
-        if not opp.empty:
-            pair = pd.concat([row, opp])
-            sim = mm.live_matchups(model, pair.assign(matchup_id="x"), n_sims=3000)[0]
-            p = sim.cat_prob if sim.team_a == me else 1 - sim.cat_prob
-            weights = trade.context_weights(p, punts, floor=0.1)
-            st.caption(f"vs **{names.get(r['opponent_key'])}** · P(win) {pct(sim.p_win if sim.team_a == me else sim.p_loss)}. "
-                       "Categories are weighted by how contested they still are this week, so a streamer who "
-                       "helps a 50/50 category outranks one who pads a category you've already locked.")
-            st.dataframe(pd.DataFrame({"P(win cat)": p, "weight": weights}).T, width="stretch",
-                         column_config={k: st.column_config.NumberColumn(format="%.2f") for k in CATEGORY_NAMES})
-        if isinstance(r["week_end"], str) and r["week_end"]:
-            week_end = date.fromisoformat(r["week_end"])
-    games_left = nba_data.games_by_team(load_schedule(SEASON), TODAY, week_end)
-    fa = load_free_agents(KEY)
-    if fa.empty or c["vals"] is None:
-        st.info("No free agents or player stats available yet.")
-        return
-    board = trade.streaming_board(fa, c["vals"].table, games_left, weights, c["vals"].replacement)
-    st.dataframe(board.head(40), hide_index=True, width="stretch", height=600, column_config={
-        "name": "Player", "eligible_positions": "Pos", "percent_owned": st.column_config.NumberColumn("% own"),
-        "MIN": st.column_config.NumberColumn(format="%.1f"), "GP": st.column_config.NumberColumn(format="%d"),
-        "games_left": st.column_config.NumberColumn("Games left", help=f"NBA games {TODAY:%b %d}–{week_end:%b %d}"),
-        "value": st.column_config.NumberColumn("Value/gm", format="%.2f"),
-        "weighted_per_game": st.column_config.NumberColumn("Wtd/gm vs repl", format="%+.2f"),
-        "stream_score": st.column_config.ProgressColumn(
-            "Stream score", format="%.2f", min_value=0,
-            max_value=float(max(board["stream_score"].max(), 1e-6)) if not board.empty else 1.0),
-        **{z: st.column_config.NumberColumn(z.replace("z_", ""), format="%+.1f") for z in Z_COLS}})
-
-
-def page_free_agency():
-    header("Free agency", "who works the wire, when, and whether it pays off")
-    c = core()
-    tx = load_transactions(KEY)
-    if tx.empty:
-        st.info("No transactions yet.")
-        return
-    holds = txa.pair_adds_drops(tx)
-    act = txa.team_activity(tx, holds)
-    adds = tx[tx["action"] == "add"]
-    k1, k2, k3, k4 = st.columns(4)
-    k1.metric("Adds this season", f"{len(adds):,}")
-    k2.metric("Most active", act.iloc[0]["team_name"] if not act.empty else "–")
-    k3.metric("Median hold", f"{holds['hold_days'].median():.1f} days" if not holds.empty else "–")
-    k4.metric("Dropped within a week", pct(((holds["hold_days"] <= 7) & holds["dropped"]).mean())
-              if not holds.empty else "–")
-
-    st.subheader("Activity by team")
-    st.dataframe(act.drop(columns="team_key"), hide_index=True, width="stretch", column_config={
-        "team_name": "Team", "add": "Adds", "drop": "Drops", "trade_players": "Players traded",
-        "median_hold_days": st.column_config.NumberColumn("Median hold (days)", format="%.1f"),
-        "stream_rate": st.column_config.ProgressColumn("Stream rate", format="percent", min_value=0, max_value=1,
-                                                       help="Share of adds dropped within 7 days")})
-    l, r = st.columns(2)
-    with l:
-        st.subheader("When moves happen")
-        st.plotly_chart(charts.timing_heatmap(txa.timing_heatmap(tx)), width="stretch")
-    with r:
-        st.subheader("How long pickups last")
-        st.plotly_chart(charts.hold_histogram(holds), width="stretch")
-
-    st.subheader("Does grinding the wire win?")
-    avp = txa.activity_vs_performance(act, c["ap"]["summary"])
-    if avp["n"] > 2:
-        st.plotly_chart(charts.activity_scatter(avp["frame"]), width="stretch")
-        st.caption(f"Spearman ρ = {avp['rho']:+.2f} across {avp['n']} teams. With this few teams, |ρ| needs to "
-                   "be above ~0.63 to be distinguishable from noise at the 5% level, and causality runs both "
-                   "ways (losing teams churn more).")
-    st.subheader("Most-added players")
-    st.dataframe(txa.hot_players(tx, holds), hide_index=True, width="stretch", column_config={
-        "player_id": None, "player_name": "Player", "times_added": "Times added", "distinct_teams": "Teams",
-        "last_added": st.column_config.DatetimeColumn("Last added", format="MMM D, h:mm a"),
-        "median_hold_days": st.column_config.NumberColumn("Median hold (days)", format="%.1f")})
-
-
-def page_compare():
-    header("Player comparison")
-    window = st.selectbox("Stat window", list(WINDOWS), index=0, key="cmp_window")
-    players = window_players(window)
-    if players.empty:
-        st.warning("No stats for this window yet.")
-        return
-    options = players.sort_values("MIN", ascending=False)
-    mapping = dict(zip(options["PLAYER_ID"], options["PLAYER_NAME"]))
-    picks = st.multiselect("Players (2–5)", list(mapping), default=list(mapping)[:2],
-                           format_func=lambda i: mapping[i], max_selections=5)
-    if len(picks) < 2:
-        return
-    sub = players[players["PLAYER_ID"].isin(picks)].copy()
-    sub["FG%"] = sub["FGM"] / sub["FGA"].where(sub["FGA"] > 0)
-    sub["FT%"] = sub["FTM"] / sub["FTA"].where(sub["FTA"] > 0)
-    sub["Headshot"] = sub["PLAYER_ID"].map(
-        lambda i: f"https://cdn.nba.com/headshots/nba/latest/1040x760/{int(i)}.png")
-    res = valuation(players, (), META.num_teams, META.roster_size).table.set_index("PLAYER_ID")
-    for z in Z_COLS + ["value"]:
-        sub[z] = sub["PLAYER_ID"].map(res[z]) if z in res else np.nan
-    cols = ["Headshot", "PLAYER_NAME", "TEAM", "GP", "MIN", "PTS", "REB", "AST", "STL", "BLK", "FG3M", "TOV",
-            "FG%", "FT%", "FGA", "FTA", "value", *Z_COLS]
-    st.dataframe(sub[[c_ for c_ in cols if c_ in sub]], hide_index=True, width="stretch", column_config={
-        "Headshot": st.column_config.ImageColumn("", width="small"), "PLAYER_NAME": "Player",
-        "FG%": st.column_config.NumberColumn(format="%.3f"), "FT%": st.column_config.NumberColumn(format="%.3f"),
-        **{k: st.column_config.NumberColumn(format="%.1f") for k in
-           ("MIN", "PTS", "REB", "AST", "STL", "BLK", "FG3M", "TOV", "FGA", "FTA")},
-        "value": st.column_config.NumberColumn("Value/gm", format="%.2f"),
-        **{z: st.column_config.NumberColumn(z.replace("z_", "z "), format="%+.2f") for z in Z_COLS}})
-    st.caption("Shooting percentages are volume-weighted (total makes ÷ total attempts), not averages of "
-               "per-game percentages.")
+    head, _, body = mine.verdict.partition(":")
+    both = mine.weighted_delta > 0 and theirs.weighted_delta > 0
+    if both:
+        body += ". They come out ahead too, so it should be an easy sell."
+    st.html(
+        '<div class="verdict">'
+        f'<div class="h">{e(head)}</div><div class="b">{e(body.strip().capitalize())}</div>'
+        '<div class="nums">'
+        f'<div class="n"><div class="k">You</div><div class="v {ui.sign_class(mine.weighted_delta)}">'
+        f'{signed(mine.weighted_delta)}</div></div>'
+        f'<div class="n"><div class="k">{e(NAMES[them])}</div><div class="v {ui.sign_class(theirs.weighted_delta)}">'
+        f'{signed(theirs.weighted_delta)}</div></div>'
+        "</div></div>")
+    ui.section("What changes for you, by category")
+    chips = []
+    for cat in CATEGORY_NAMES:
+        d = float(mine.table.at[cat, "delta"])
+        off = mine.table.at[cat, "weight"] == 0
+        chips.append(f'<div class="chip{" off" if off else ""}"><div class="k">{cat}</div>'
+                     f'<div class="v {"" if off else ui.sign_class(d)}">{signed(d)}</div></div>')
+    st.html('<div class="chips">' + "".join(chips) + "</div>")
+    ui.footnote("Per-game z-score change. The headline numbers weight each category by how close "
+                "that team is to 50/50 in it, and uneven trades are charged for the roster spot.")
 
 
 # ======================================================================== navigation
-st.logo("ryanlogo.png", link="https://rsandan.github.io", size="large")
-nav = st.navigation({
-    "League": [st.Page(page_home, title="This week", icon="🏠", default=True),
-               st.Page(page_power, title="Power rankings", icon="📈"),
-               st.Page(page_matchup_lab, title="Matchup lab", icon="🧪")],
-    "Players": [st.Page(page_values, title="Player values", icon="🧮"),
-                st.Page(page_trade, title="Trade analyzer", icon="🔁"),
-                st.Page(page_streaming, title="Streaming board", icon="📅"),
-                st.Page(page_free_agency, title="Free agency", icon="🗣️"),
-                st.Page(page_compare, title="Player comparison", icon="⛹🏽")],
-})
+PAGES = [
+    st.Page(page_week, title="This Week", icon=":material/sports_basketball:", default=True),
+    st.Page(page_standings, title="Standings", icon=":material/leaderboard:", url_path="standings"),
+    st.Page(page_players, title="Players", icon=":material/person_search:", url_path="players"),
+    st.Page(page_trade, title="Trade", icon=":material/swap_horiz:", url_path="trade"),
+]
+nav = st.navigation(PAGES, position="hidden")
+ui.inject()
+
+me = my_team()
+qp = {"team": _short(me)} if me else None
+if me:
+    st.query_params["team"] = _short(me)
+with st.container(horizontal=True, key="tabbar"):
+    for i, p in enumerate(PAGES):
+        with st.container(key=f"tab_{i}"):
+            st.page_link(p, label=p.title, icon=p.icon, query_params=qp)
+active = next((i for i, p in enumerate(PAGES) if p.title == nav.title), 0)
+st.html(f"<style>.st-key-tab_{active} a[data-testid='stPageLink-NavLink']"
+        "{color:var(--blue) !important}</style>")
+
 nav.run()
-st.caption(f"© {date.today().year} Ryan Sandan · [rsandan.github.io](https://rsandan.github.io)")

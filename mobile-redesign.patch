@@ -1,0 +1,2094 @@
+diff --git a/.streamlit/config.toml b/.streamlit/config.toml
+index e7ed293..c183aa0 100644
+--- a/.streamlit/config.toml
++++ b/.streamlit/config.toml
+@@ -1,12 +1,29 @@
++# iOS system colors. Defining both light and dark makes the app follow the phone's appearance.
+ [theme]
+-base = "dark"
+-primaryColor = "#3987e5"
+-backgroundColor = "#111110"
+-secondaryBackgroundColor = "#1a1a19"
++font = "-apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', Roboto, sans-serif"
++baseRadius = "0.75rem"
++showWidgetBorder = false
++
++[theme.light]
++primaryColor = "#007aff"
++backgroundColor = "#f2f2f7"
++secondaryBackgroundColor = "#ffffff"
++textColor = "#000000"
++borderColor = "#d1d1d6"
++
++[theme.dark]
++primaryColor = "#0a84ff"
++backgroundColor = "#000000"
++secondaryBackgroundColor = "#1c1c1e"
+ textColor = "#ffffff"
++borderColor = "#38383a"
+ 
+ [server]
+ headless = true
++enableStaticServing = true
++
++[client]
++toolbarMode = "minimal"
+ 
+ [browser]
+ gatherUsageStats = false
+diff --git a/README.md b/README.md
+index 40536d9..40bd484 100644
+--- a/README.md
++++ b/README.md
+@@ -10,18 +10,29 @@
+ 
+ A Streamlit site for my friends' Yahoo Fantasy Basketball league (**Love Island (NBA)**, H2H, 10 teams, 9 categories: FG%, FT%, 3PTM, PTS, REB, AST, STL, BLK, TO).
+ 
+-Season 1 was a scoreboard: standings, this week's matchups, and a "sum of category ranks" table. For season 3 I rebuilt it as a decision tool with a real model underneath:
+-
+-| Page | What it answers | Method |
+-|---|---|---|
+-| **This week** | Who's going to win each matchup, category by category? | Monte Carlo simulation of the rest of the week (banked stats + remaining games) |
+-| **Power rankings** | Who's actually good, and who's been lucky? | All-play records, schedule luck, model-based power rating, playoff odds |
+-| **Matchup lab** | Team A vs Team B in a neutral week? How good is the model? | Same simulator + a walk-forward backtest with calibration |
+-| **Player values** | Who helps a 9-cat team most, for my build? | Replacement-aware z-scores with punt support, early-season shrinkage |
+-| **Trade analyzer** | Should I take this deal? Would they? | z-score deltas weighted by each team's swing categories, roster-spot pricing |
+-| **Streaming board** | Who do I add today? | Value above replacement × games left, weighted by which categories are still in play this week |
+-| **Free agency** | Who works the wire and does it pay off? | Add/drop pairing, hold times, stream rate, timing heatmap, activity vs all-play |
+-| **Player comparison** | Side by side for 2 to 5 players | League-wide per-game lines, volume-weighted percentages |
++Season 1 was a scoreboard. Season 3 is a phone app: almost everyone opens it from an iPhone,
++so it's built like one.
++
++| Tab | What it answers |
++|---|---|
++| **This Week** | How's my matchup going? Win probability up top, then all nine categories with who's leading, the projection, and your chance to win each one. Other matchups tap open below. |
++| **Standings** | Record, all-play and schedule luck · **Power** (schedule-neutral strength, strong/weak categories) · **Playoffs** (odds with the playoff line drawn in). |
++| **Players** | **Pickups**: who to add today, weighted toward the categories still in play in your matchup · **Rankings**: searchable 9-cat values with punt and stat-window filters. |
++| **Trade** | Pick what you send and what you get. One verdict, both sides' view, and a per-category breakdown. |
++
++### Mobile design
++
++- **Bottom tab bar**, thumb-reachable, instead of a hidden sidebar menu.
++- **Your team, remembered.** Pick it once and it's saved in the link (`?team=3`). Add the page to your
++  home screen and it opens straight to your matchup, full screen, with its own icon.
++- **Lists, not spreadsheets.** Every table became an inset grouped list. Nothing scrolls sideways.
++- **Follows the phone's light/dark setting**, using iOS system colors.
++- **No keyboard unless you're searching.** Teams and categories are tap targets (radio lists, pills,
++  segmented controls). Every row is at least 44pt tall, inputs are 16px so Safari doesn't zoom.
++- **Color is never the only signal.** Every +/− has a sign and every probability has a number.
++
++Cut for mobile: the matchup lab and its backtest charts, the free-agency analytics page, and player
++comparison. The analytics behind them still live in `fantasy/` and are still covered by the tests.
+ 
+ Everything runs without credentials in **demo mode** on a synthetic league: `FANTASY_DEMO=1 streamlit run app.py`.
+ 
+@@ -35,7 +46,7 @@ Each team-week is reduced to **per player-game rates** over 11 additive componen
+ - **Parameter uncertainty:** simulations add the posterior variance of each team's mean (`1 / (weeks of evidence + prior weeks)`), so early-season probabilities aren't overconfident. For season simulations that uncertainty is drawn once per simulated season, because a team's true strength doesn't re-roll every week.
+ - **Percentages are simulated correctly:** draw attempts and make rate, compute makes, then divide. Totals are rounded to integers and percentages to Yahoo's 3-decimal display precision, so category ties happen at realistic rates (they're common in BLK and STL).
+ 
+-**Backtest (Matchup lab):** walk-forward. For every completed week *w*, fit on weeks before *w* only and predict every category of every matchup before tipoff. It reports Brier score, log loss, Brier skill score vs a coin flip, an empirical "compare past weeks directly" baseline, and a reliability curve. On the synthetic league the model scores a category Brier skill score of roughly 0.28 versus about 0.09 for the empirical baseline, and the calibration curve tracks the diagonal. Real-league numbers show up on the page once five weeks are complete.
++**Backtest (`mm.backtest`, run in the test suite):** walk-forward. For every completed week *w*, fit on weeks before *w* only and predict every category of every matchup before tipoff. It reports Brier score, log loss, Brier skill score vs a coin flip, an empirical "compare past weeks directly" baseline, and a reliability curve. On the synthetic league the model scores a category Brier skill score of roughly 0.28 versus about 0.09 for the empirical baseline, and the calibration curve tracks the diagonal.
+ 
+ ### 2. Player valuation (`fantasy/valuation.py`)
+ - **Replacement-aware pool:** z-scores are measured against the top `teams × roster spots` players, chosen iteratively, not against all ~550 NBA players (that inflates everyone).
+@@ -55,17 +66,16 @@ Each team-week is reduced to **per player-game rates** over 11 additive componen
+ - Removed the hard-coded league key and `team_ids` dict. The league and team names are discovered at runtime, so the app survives Yahoo's new league key every season.
+ - Removed the hard-coded `season="2024-25"` and `"Week 22"`.
+ - The scoreboard parser now keeps `FGM/A` and `FTM/A`. The old one dropped them, which made correct percentage aggregation impossible.
+-- Player comparison averaged per-game FG% (so 1-for-1 counted the same as 10-for-25). It now uses total makes ÷ total attempts.
++- The old player comparison averaged per-game FG% (so 1-for-1 counted the same as 10-for-25). All percentages now use total makes ÷ total attempts.
+ - OAuth tokens refresh into a writable temp copy. Render mounts `/etc/secrets` read-only, so in-place refreshes failed once the one-hour token expired.
+ - **Caching:** completed weeks are cached for the life of the process, the live week for 5 minutes, and NBA stats for 6 hours. Previously every page view re-fetched every week from Yahoo.
+ - Renamed the entry point from `streamlit.py` to `app.py`. A script named `streamlit.py` shadows the `streamlit` package on import.
+-- Built the "Free Agency" page, which was listed in the sidebar but never implemented.
+ - Removed the unused dependencies (`boto3`, `matplotlib`, `seaborn`).
+ 
+ ## Project layout
+ 
+ ```
+-app.py                     Streamlit UI (8 pages), caching layer
++app.py                     Streamlit app: 4 tabs, caching layer, "my team" state
+ fantasy/
+   categories.py            9-cat definitions, tie/NaN-aware category comparison
+   yahoo_client.py          OAuth, league discovery, pure JSON parsers (scoreboard, transactions)
+@@ -75,10 +85,11 @@ fantasy/
+   valuation.py             replacement-aware z-scores, punts
+   trade.py                 trade evaluation, context weights, streaming board
+   transactions.py          add/drop pairing, activity, timing
+-  charts.py                Plotly figures (dark theme, colorblind-checked palette)
++  ui.py                    iOS-style components (lists, scoreboard, tab bar), light/dark CSS
+   data_source.py           live vs. demo switch
+   demo.py                  synthetic league generator (tests + demo mode)
+-tests/                     34 tests: parsing, math, model skill/calibration, every page renders
++static/                    home-screen icon
++tests/                     34 tests: parsing, math, model skill/calibration, every tab renders
+ ```
+ 
+ ## Running it
+diff --git a/app.py b/app.py
+index 2c18d4e..60dad5e 100644
+--- a/app.py
++++ b/app.py
+@@ -1,26 +1,31 @@
+-"""Love Island (NBA) fantasy dashboard.
++"""Love Island (NBA) fantasy dashboard. Built for iPhone first.
+ 
+-Run:  streamlit run app.py              (live, needs Yahoo OAuth secrets)
++Run:  streamlit run app.py                  (live, needs Yahoo OAuth secrets)
+       FANTASY_DEMO=1 streamlit run app.py   (synthetic league, no credentials)
++
++Four tabs, one job each:
++  This Week   how is my matchup going, category by category
++  Standings   record, schedule-neutral power, playoff odds
++  Players     who to pick up today, and a searchable 9-cat ranking
++  Trade       should I take this deal
+ """
+ from __future__ import annotations
+ 
+-from datetime import date, datetime
++from datetime import date
+ 
+-import numpy as np
+ import pandas as pd
+ import streamlit as st
+ 
+-from fantasy import charts, nba_data
+ from fantasy import matchup_model as mm
+-from fantasy import power, trade
+-from fantasy import transactions as txa
++from fantasy import nba_data, power, trade
++from fantasy import ui
+ from fantasy.categories import CATEGORIES, CATEGORY_NAMES, category_value, compare
+ from fantasy.data_source import connect
++from fantasy.ui import e, pct, signed
+ from fantasy.valuation import Z_COLS, value_players
+ 
+-st.set_page_config(page_title="Love Island (NBA)", page_icon="🏀", layout="wide",
+-                   initial_sidebar_state="expanded")
++st.set_page_config(page_title="Love Island", page_icon="🏀", layout="centered",
++                   initial_sidebar_state="collapsed")
+ ET = "America/New_York"
+ 
+ 
+@@ -70,16 +75,9 @@ def load_future_weeks(key: str, first: int, last: int) -> pd.DataFrame:
+ 
+ 
+ def team_weeks() -> pd.DataFrame:
+-    """Weeks 1..current. The fetch loop is cheap after the first load (per-week cache)."""
+     frames = [load_final_week(KEY, w) for w in range(META.start_week, META.current_week)]
+     frames.append(load_live_week(KEY, META.current_week))
+-    df = pd.concat([f for f in frames if not f.empty], ignore_index=True)
+-    return df
+-
+-
+-@st.cache_data(ttl=900, show_spinner=False)
+-def load_transactions(key: str) -> pd.DataFrame:
+-    return SOURCE.transactions()
++    return pd.concat([f for f in frames if not f.empty], ignore_index=True)
+ 
+ 
+ @st.cache_data(ttl=1800, show_spinner=False)
+@@ -108,7 +106,7 @@ SEASON = nba_data.season_for(TODAY)
+ PRIOR = nba_data.previous_season(SEASON)
+ 
+ 
+-@st.cache_data(ttl=21600, show_spinner="Blending current and prior season…")
++@st.cache_data(ttl=21600, show_spinner="Loading player stats…")
+ def blended_players(season: str) -> pd.DataFrame:
+     return nba_data.blend_seasons(load_players(season), load_players(nba_data.previous_season(season)))
+ 
+@@ -125,14 +123,14 @@ def matched_rosters(key: str, values: pd.DataFrame) -> pd.DataFrame:
+     return trade.match_players(ros, values) if not ros.empty else ros
+ 
+ 
+-@st.cache_data(ttl=300, show_spinner="Fitting team-strength model…")
++@st.cache_data(ttl=300, show_spinner="Crunching the numbers…")
+ def fit_model(tw: pd.DataFrame, priors: pd.DataFrame | None, team_keys: tuple) -> mm.TeamModel:
+     return mm.fit_team_model(tw, teams=list(team_keys), priors=priors)
+ 
+ 
+-@st.cache_data(ttl=None, max_entries=8, show_spinner="Backtesting the model week by week…")
+-def run_backtest(done: pd.DataFrame) -> dict:
+-    return mm.backtest(done, n_sims=1500)
++@st.cache_data(ttl=300, show_spinner="Simulating this week…")
++def week_sims(_model: mm.TeamModel, live: pd.DataFrame, model_sig: str) -> list:
++    return mm.live_matchups(_model, live, n_sims=4000)
+ 
+ 
+ @st.cache_data(ttl=300, show_spinner="Simulating the rest of the season…")
+@@ -141,7 +139,7 @@ def season_sim(_model: mm.TeamModel, tw: pd.DataFrame, future: pd.DataFrame, mod
+                               META.playoff_start_week, n_sims=2000)
+ 
+ 
+-@st.cache_data(ttl=300, show_spinner=False)
++@st.cache_data(ttl=300, show_spinner="Rating teams…")
+ def ratings(_model: mm.TeamModel, model_sig: str) -> pd.Series:
+     return power.power_ratings(_model, n_sims=1200)
+ 
+@@ -165,228 +163,246 @@ def core():
+                 model=model, ap=ap, sig=model_signature(tw))
+ 
+ 
+-def banked_score(a: pd.Series, b: pd.Series) -> tuple[int, int, int]:
+-    res = [compare(category_value(a, c), category_value(b, c), c) for c in CATEGORIES]
+-    return sum(r == 1 for r in res), sum(r == 0 for r in res), sum(r == 0.5 for r in res)
++# ===================================================================== "who am I"
++# The user's team lives in session state and is mirrored into the URL (?team=3), so a
++# bookmark or an Add to Home Screen icon opens straight to their own matchup.
++NAMES = dict(zip(load_teams(KEY)["team_key"], load_teams(KEY)["team_name"]))
++
++
++def _short(team_key: str) -> str:
++    return str(team_key).split(".t.")[-1]
++
++
++def my_team() -> str | None:
++    me = st.session_state.get("me")
++    if me in NAMES:
++        return me
++    q = st.query_params.get("team")
++    for k in NAMES:
++        if q and _short(k) == q:
++            st.session_state["me"] = k
++            return k
++    return None
++
++
++def _pick_team(widget_key: str):
++    st.session_state["me"] = st.session_state[widget_key]
++
++
++def team_picker(widget_key: str, label: str = "Your team"):
++    keys = list(NAMES)
++    me = my_team()
++    st.radio(label, keys, index=keys.index(me) if me in keys else None, format_func=NAMES.get,
++             key=widget_key, on_change=_pick_team, args=(widget_key,))
++
++
++# ========================================================================= chrome
++def title_bar(title: str, sub: str = "", live: bool = False):
++    with st.container(horizontal=True, vertical_alignment="bottom", key="titlebar"):
++        st.html(ui.large_title(title, sub, live))
++        with st.popover("", icon=":material/account_circle:", type="tertiary", key="profile"):
++            team_picker("me_profile")
++            st.caption("Saved in this page's link. In Safari tap Share, then **Add to Home Screen**, "
++                       "and it opens straight to your team.")
++            st.caption("By Ryan Sandan · [rsandan.github.io](https://rsandan.github.io)")
++    if SOURCE.is_demo and FALLBACK_REASON and FALLBACK_REASON != "FANTASY_DEMO is set":
++        st.caption(f"Yahoo is unreachable, so this is a demo league. ({FALLBACK_REASON})")
+ 
+ 
+ def fmt_cat(value: float, cat_name: str) -> str:
+     if value != value:
+         return "–"
+-    return f"{value:.3f}".lstrip("0") if cat_name in ("FG%", "FT%") else f"{value:.0f}"
++    return f"{value:.3f}".lstrip("0") if cat_name in ("FG%", "FT%") else f"{value:,.0f}"
+ 
+ 
+-def pct(x) -> str:
+-    """Probability label that never claims certainty a simulation can't support."""
+-    if x is None or x != x:
+-        return "–"
+-    if x < 0.005:
+-        return "<1%"
+-    if x > 0.995:
+-        return ">99%"
+-    return f"{x:.0%}"
+-
+-
+-# ========================================================================== header
+-def header(title: str, subtitle: str | None = None):
+-    st.title(title)
+-    now = datetime.now(pd.Timestamp.now(tz=ET).tz).strftime("%b %d, %Y · %I:%M %p ET")
+-    src = "Demo league (synthetic data)" if SOURCE.is_demo else "Live from Yahoo Fantasy"
+-    st.caption(f"Week {META.current_week} · {src} · snapshot {now}"
+-               + (f" · {subtitle}" if subtitle else ""))
+-    if SOURCE.is_demo and FALLBACK_REASON and FALLBACK_REASON != "FANTASY_DEMO is set":
+-        st.info(f"Couldn't reach Yahoo, so this is the demo league. Reason: `{FALLBACK_REASON}`")
++def banked_score(a: pd.Series, b: pd.Series) -> tuple[int, int, int]:
++    res = [compare(category_value(a, c), category_value(b, c), c) for c in CATEGORIES]
++    return sum(r == 1 for r in res), sum(r == 0 for r in res), sum(r == 0.5 for r in res)
++
++
++def oriented(sim, live: pd.DataFrame, me: str | None) -> dict:
++    """Put `me` on the left when I'm in this matchup."""
++    a = live[live["team_key"] == sim.team_a].iloc[0]
++    b = live[live["team_key"] == sim.team_b].iloc[0]
++    if me is not None and sim.team_b == me:
++        return dict(ka=sim.team_b, kb=sim.team_a, a=b, b=a, pa=sim.p_loss, pb=sim.p_win, tie=sim.p_tie,
++                    cat=1 - sim.cat_prob, proj_a=sim.proj_b, proj_b=sim.proj_a)
++    return dict(ka=sim.team_a, kb=sim.team_b, a=a, b=b, pa=sim.p_win, pb=sim.p_loss, tie=sim.p_tie,
++                cat=sim.cat_prob, proj_a=sim.proj_a, proj_b=sim.proj_b)
++
++
++def scoreboard(o: dict, card: bool = True) -> str:
++    """Apple-Sports-style matchup card: win probability up top, nine categories below."""
++    started = o["a"]["status"] != "preevent"
++    na, nb = NAMES.get(o["ka"], o["ka"]), NAMES.get(o["kb"], o["kb"])
++    w, l, t = banked_score(o["a"], o["b"]) if started else (0, 0, 0)
++    a_fav = o["pa"] >= o["pb"]
++    gl = lambda r: "?" if pd.isna(r["remaining_games"]) else f"{r['remaining_games']:.0f}"
++    tie = f" · tie {pct(o['tie'])}" if o["tie"] >= 0.01 else ""
++    html = [
++        f'<div class="hero" style="{"" if card else "background:transparent;padding:0"}">'
++        '<div class="top">'
++        f'<div><div class="tn">{e(na)}</div><div class="big {"" if a_fav else "dim"}">{pct(o["pa"])}</div></div>'
++        f'<div class="mid"><div class="score">{f"{w}–{l}–{t}" if started else "vs"}</div>'
++        f'<div class="cap">{"categories" if started else "not started"}</div></div>'
++        f'<div class="r"><div class="tn">{e(nb)}</div><div class="big {"dim" if a_fav else ""}">{pct(o["pb"])}</div></div>'
++        "</div>",
++        f'<div class="bar"><span style="width:{(o["pa"] + o["tie"] / 2) * 100:.1f}%"></span></div>',
++        f'<div class="meta">Chance to win the week · {gl(o["a"])} vs {gl(o["b"])} games left{tie}</div>',
++    ]
++    for cat in CATEGORIES:
++        va, vb = category_value(o["a"], cat), category_value(o["b"], cat)
++        pa, pb = o["proj_a"][cat.name], o["proj_b"][cat.name]
++        shown_a, shown_b = (va, vb) if started else (pa, pb)
++        lead = compare(shown_a, shown_b, cat)
++        p = float(o["cat"][cat.name])
++        proj = lambda v: f'<div class="proj">proj {fmt_cat(v, cat.name)}</div>' if started else ""
++        html.append(
++            '<div class="cat">'
++            f'<div><div class="v {"lead" if lead == 1 else ""}">{fmt_cat(shown_a, cat.name)}</div>{proj(pa)}</div>'
++            f'<div class="c"><div class="cn">{cat.name}</div>{ui.mini_bar(p)}<div class="p">{pct(p)}</div></div>'
++            f'<div class="r"><div class="v r {"lead" if lead == 0 else ""}">{fmt_cat(shown_b, cat.name)}</div>'
++            f'<div class="proj" style="text-align:right">{"proj " + fmt_cat(pb, cat.name) if started else ""}</div></div>'
++            "</div>")
++    html.append("</div>")
++    return "".join(html)
++
++
++def show_more(key: str, total: int, step: int) -> int:
++    n = st.session_state.get(key, step)
++    return min(n, total)
++
++
++def more_button(key: str, shown: int, total: int, step: int):
++    if shown < total:
++        if st.button(f"Show {min(step, total - shown)} more", key=f"{key}_btn", type="tertiary",
++                     width="stretch"):
++            st.session_state[key] = shown + step
++            st.rerun()
+ 
+ 
+ # =========================================================================== pages
+-def page_home():
+-    header(META.name)
++def page_week():
+     c = core()
+-    tw, names, model, ap = c["tw"], c["names"], c["model"], c["ap"]
+-    if st.button("🔄 Refresh live scores"):
+-        load_live_week.clear()
+-        st.rerun()
+-
++    tw, model = c["tw"], c["model"]
++    me = my_team()
+     live = tw[tw["week"] == META.current_week]
+-    st.subheader(f"Week {META.current_week} matchups")
++    started = not live.empty and (live["status"] != "preevent").any()
++    title_bar(f"Week {META.current_week}", e(META.name), live=started and live["status"].eq("midevent").any())
++
++    if me is None:
++        ui.section("Welcome")
++        with st.container(border=False, key="onboard"):
++            team_picker("me_onboard", "Which team is yours?")
++        ui.footnote("Pick once and your matchup leads this screen. You can change it from the "
++                    "profile button up top.")
++
+     if live.empty:
+-        st.write("No matchups scheduled yet. Check back after the draft.")
+-    else:
+-        st.caption("Win probabilities come from 4,000 simulations of each matchup: what's already "
+-                   "banked this week plus each team's remaining games drawn from its fitted "
+-                   "per-game rates (with category correlations). Ties in a category count half.")
+-        sims = mm.live_matchups(model, live, n_sims=4000)
+-        cols = st.columns(2)
+-        for i, sim in enumerate(sims):
+-            a = live[live["team_key"] == sim.team_a].iloc[0]
+-            b = live[live["team_key"] == sim.team_b].iloc[0]
+-            w, l, t = banked_score(a, b) if a["status"] != "preevent" else (0, 0, 0)
+-            with cols[i % 2].container(border=True):
+-                na, nb = names.get(sim.team_a, sim.team_a), names.get(sim.team_b, sim.team_b)
+-                st.markdown(f"**{na}** vs **{nb}**")
+-                m1, m2, m3 = st.columns(3)
+-                m1.metric(f"{na[:18]} win", pct(sim.p_win))
+-                m2.metric("Tie", pct(sim.p_tie))
+-                m3.metric(f"{nb[:18]} win", pct(sim.p_loss))
+-                gl = lambda r: "?" if pd.isna(r["remaining_games"]) else f"{r['remaining_games']:.0f}"
+-                st.caption(f"Current score {w}-{l}-{t} · games left {gl(a)} vs {gl(b)} · "
+-                           f"projected categories {sim.exp_cats_a:.1f}–{9 - sim.exp_cats_a:.1f}")
+-                rows = []
+-                for cat in CATEGORIES:
+-                    rows.append({"Cat": cat.name,
+-                                 na[:14]: fmt_cat(category_value(a, cat), cat.name),
+-                                 nb[:14]: fmt_cat(category_value(b, cat), cat.name),
+-                                 "Proj": f"{fmt_cat(sim.proj_a[cat.name], cat.name)} – "
+-                                         f"{fmt_cat(sim.proj_b[cat.name], cat.name)}",
+-                                 "Win %": sim.cat_prob[cat.name]})
+-                st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch",
+-                             column_config={"Win %": st.column_config.ProgressColumn(
+-                                 f"{na[:10]} wins", format="percent", min_value=0, max_value=1)})
+-
+-    st.subheader("Standings")
+-    summ = ap["summary"]
+-    if summ.empty:
+-        st.write("Standings appear after the first completed week.")
++        ui.footnote("No matchups yet. They show up once the league schedule is set.")
+         return
+-    table = summ.assign(team=summ["team_key"].map(names))
+-    rec_col = "cat_record" if META.scoring_type == "head" else "h2h_record"
+-    rec_pct = "cat_pct" if META.scoring_type == "head" else "h2h_pct"
+-    table = table.sort_values(rec_pct, ascending=False)
+-    table.insert(0, "Rank", range(1, len(table) + 1))
+-    luck = "luck_category" if META.scoring_type == "head" else "luck_matchup"
+-    st.dataframe(
+-        table[["Rank", "team", rec_col, rec_pct, "ap_record", "ap_pct", luck]],
+-        hide_index=True, width="stretch",
+-        column_config={
+-            "team": "Team", rec_col: "Record", rec_pct: st.column_config.NumberColumn("Win %", format="%.3f"),
+-            "ap_record": "All-play record",
+-            "ap_pct": st.column_config.NumberColumn("All-play %", format="%.3f",
+-                                                    help="Record if you played every team every week"),
+-            luck: st.column_config.NumberColumn("Luck", format="%+.3f",
+-                                                help="Actual win% minus all-play win%. Positive = soft schedule."),
+-        })
+-
+-
+-def page_power():
+-    header("Power rankings", "schedule-neutral team strength")
++
++    sims = week_sims(model, live, c["sig"])
++    mine = [s for s in sims if me in (s.team_a, s.team_b)]
++    others = [s for s in sims if me not in (s.team_a, s.team_b)]
++
++    if mine:
++        st.html(scoreboard(oriented(mine[0], live, me)))
++        ui.footnote("Each matchup is played out 4,000 times from what's already banked plus every "
++                    "team's remaining games. The bar under each category is your chance to win it.")
++
++    ui.section("Your league" if mine else "Matchups")
++    for s in others:
++        o = oriented(s, live, None)
++        na, nb = NAMES.get(o["ka"], ""), NAMES.get(o["kb"], "")
++        with st.expander(f"{na}  {pct(o['pa'])}  ·  {pct(o['pb'])}  {nb}"):
++            st.html(scoreboard(o, card=False))
++
++    now = pd.Timestamp.now(tz=ET)
++    with st.container(horizontal=True, vertical_alignment="center", key="refresh_row"):
++        ui.footnote(f"Updated {now:%-I:%M %p} ET")
++        if st.button("Refresh", icon=":material/refresh:", type="tertiary"):
++            load_live_week.clear()
++            week_sims.clear()
++            st.rerun()
++
++
++def _cat_summary(rates: pd.DataFrame, team_key: str) -> str:
++    if team_key not in rates.index:
++        return ""
++    r = rates.loc[team_key].reindex(CATEGORY_NAMES).dropna()
++    strong = r[r >= 0.6].sort_values(ascending=False).index[:3].tolist()
++    weak = r[r <= 0.4].sort_values().index[:2].tolist()
++    parts = []
++    if strong:
++        parts.append("Strong " + ", ".join(strong))
++    if weak:
++        parts.append("Weak " + ", ".join(weak))
++    return " · ".join(parts) or "Balanced"
++
++
++def page_standings():
+     c = core()
+-    tw, names, model, ap = c["tw"], c["names"], c["model"], c["ap"]
++    tw, model, ap = c["tw"], c["model"], c["ap"]
++    me = my_team()
++    title_bar("Standings", e(META.name))
+     summ = ap["summary"]
+     if summ.empty:
+-        st.info("Power rankings need at least one completed week.")
++        ui.footnote("Standings show up after the first week is complete.")
+         return
+-    pr = ratings(model, c["sig"])
+-    future = load_future_weeks(KEY, META.current_week + 1, META.playoff_start_week - 1) \
+-        if not SOURCE.is_demo else tw[tw["status"] == "preevent"]
+-    live = tw[tw["week"] == META.current_week]
+-    fut = pd.concat([live, future], ignore_index=True) if not future.empty else live
+-    odds = season_sim(model, tw, fut, c["sig"]).set_index("team_key")
+-    form = power.recent_form(ap["weekly"])
+ 
++    view = st.segmented_control("View", ["Standings", "Power", "Playoffs"], default="Standings",
++                                required=True, label_visibility="collapsed", key="stand_view",
++                                width="stretch")
+     t = summ.set_index("team_key")
+-    board = pd.DataFrame({
+-        "Team": [names.get(k, k) for k in t.index],
+-        "Power": pr.reindex(t.index).values,
+-        "All-play %": t["ap_pct"].values,
+-        "Form (3-wk half-life)": form.reindex(t.index).values,
+-        "Luck": (t["luck_category"] if META.scoring_type == "head" else t["luck_matchup"]).values,
+-        "Playoff odds": odds["playoff_odds"].reindex(t.index).values,
+-        "#1 seed": odds["top_seed_odds"].reindex(t.index).values,
+-        "Proj. final win %": odds["exp_win_pct"].reindex(t.index).values,
+-    }, index=t.index).sort_values("Power", ascending=False)
+-    board.insert(0, "Rank", range(1, len(board) + 1))
+-    st.dataframe(board, hide_index=True, width="stretch", column_config={
+-        "Power": st.column_config.ProgressColumn(
+-            "Power", format="%.3f", min_value=0, max_value=1,
+-            help="P(beating a random league opponent in a typical week), from the matchup model"),
+-        "All-play %": st.column_config.NumberColumn(format="%.3f"),
+-        "Form (3-wk half-life)": st.column_config.NumberColumn(format="%.3f"),
+-        "Luck": st.column_config.NumberColumn(format="%+.3f"),
+-        "Playoff odds": st.column_config.ProgressColumn(format="percent", min_value=0, max_value=1),
+-        "#1 seed": st.column_config.NumberColumn(format="percent"),
+-        "Proj. final win %": st.column_config.NumberColumn(format="%.3f"),
+-    })
+-    with st.expander("How these are computed"):
+-        st.markdown(f"""
+-- **Power** asks the matchup model how often each team beats every other team over a full week with
+-  equal games, then averages. It's schedule-neutral, and early-season results are shrunk toward the
+-  league average (and toward roster projections when rosters are available).
+-- **All-play %** scores each completed week against *all* {META.num_teams - 1} opponents, not only the scheduled one.
+-- **Luck** = actual win % − all-play win %. Over a season it mostly reflects the schedule, not skill.
+-- **Playoff odds** simulate the remaining regular season 2,000 times with the real schedule and the
+-  league's scoring format (`{META.scoring_type}`); top {META.num_playoff_teams} make it. Exact ties are
+-  broken at random because Yahoo's tiebreakers aren't in the API.
+-""")
+-
+-    l, r = st.columns(2)
+-    with l:
+-        st.subheader("Playoff odds")
+-        st.plotly_chart(charts.probability_bars(
+-            board.reset_index().rename(columns={"Team": "team_name"}), "Playoff odds"), width="stretch")
+-    with r:
+-        st.subheader("Schedule luck")
+-        st.plotly_chart(charts.luck_bars(
+-            board.reset_index().rename(columns={"Team": "team_name"}), "Luck"), width="stretch")
+-    st.subheader("Category strength (all-play category win rate)")
+-    st.caption("Blue = wins that category most weeks against the league, red = loses it. A column of "
+-               "red for one team is a punt, deliberate or not.")
+-    st.plotly_chart(charts.category_heatmap(ap["category_rates"], names), width="stretch")
+-
+-
+-def page_matchup_lab():
+-    header("Matchup lab", "any two teams, plus how well the model has predicted")
+-    c = core()
+-    names, model = c["names"], c["model"]
+-    keys = list(names)
+-    col1, col2, col3 = st.columns([2, 2, 1])
+-    a = col1.selectbox("Team A", keys, format_func=names.get, index=0)
+-    b = col2.selectbox("Team B", keys, format_func=names.get, index=1 if len(keys) > 1 else 0)
+-    games = col3.number_input("Games each", 10, 60, int(round(model.g_ref)))
+-    if a == b:
+-        st.warning("Pick two different teams.")
++    head = META.scoring_type == "head"
++
++    if view == "Standings":
++        rec, rp = ("cat_record", "cat_pct") if head else ("h2h_record", "h2h_pct")
++        luck = t["luck_category"] if head else t["luck_matchup"]
++        order = t.sort_values(rp, ascending=False).index
++        rows = [ui.row(e(NAMES.get(k, k)),
++                       f"All-play {t.at[k, 'ap_pct']:.3f} · luck {signed(luck[k], 3)}".replace("0.", "."),
++                       t.at[k, rec], f"{t.at[k, rp]:.3f}".lstrip("0"), lead=ui.rank(i), me=k == me)
++                for i, k in enumerate(order, 1)]
++        ui.group(rows)
++        ui.footnote("<b>All-play</b> is your record if you played every team every week. "
++                    "<b>Luck</b> is the gap between that and your real record: positive means a soft schedule.")
++
++    elif view == "Power":
++        pr = ratings(model, c["sig"])
++        form = power.recent_form(ap["weekly"])
++        order = pr.reindex(t.index).sort_values(ascending=False).index
++        rates = ap["category_rates"]
++        rows = [ui.row(e(NAMES.get(k, k)), e(_cat_summary(rates, k)), pct(pr.get(k)),
++                       f"form {form.get(k, float('nan')):.3f}".replace("0.", "."),
++                       lead=ui.rank(i), me=k == me, extra=ui.mini_bar(pr.get(k, 0)))
++                for i, k in enumerate(order, 1)]
++        ui.group(rows)
++        ui.footnote("<b>Power</b> is each team's chance to beat an average league opponent in a normal "
++                    "week, from the matchup model. It ignores the schedule. <b>Form</b> weights recent weeks.")
++
+     else:
+-        sim = mm.simulate_matchup(model, a, b, games_a=games, games_b=games, n_sims=6000)
+-        m1, m2, m3, m4 = st.columns(4)
+-        m1.metric(f"{names[a]} win", pct(sim.p_win))
+-        m2.metric("Tie", pct(sim.p_tie))
+-        m3.metric(f"{names[b]} win", pct(sim.p_loss))
+-        m4.metric("Expected categories", f"{sim.exp_cats_a:.1f} – {9 - sim.exp_cats_a:.1f}")
+-        st.plotly_chart(charts.category_win_bars(sim.cat_prob, names[a], names[b]), width="stretch")
+-        dist = pd.Series(sim.cats_a + 0.5 * sim.ties).round(1).value_counts(normalize=True).sort_index()
+-        st.caption("Distribution of categories won by " + names[a] + ": " +
+-                   " · ".join(f"{k:g}: {v:.0%}" for k, v in dist.items() if v >= 0.01))
+-
+-    st.divider()
+-    st.subheader("Model backtest")
+-    done = c["tw"][c["tw"]["status"] == "postevent"]
+-    if done["week"].nunique() < 5:
+-        st.info("The walk-forward backtest needs at least 5 completed weeks (3 to train, 2+ to test).")
+-        return
+-    bt = run_backtest(done)
+-    met = bt["metrics"]
+-    st.markdown(
+-        "Walk-forward: for each week *w*, the model is fit only on weeks before *w* and predicts every "
+-        "category of every matchup before the week starts. Lower Brier/log loss is better; **BSS** is "
+-        "the Brier skill score versus a coin flip (0 = no skill, 1 = perfect). The empirical baseline "
+-        "compares the two teams' past weekly results directly, with no model.")
+-    st.dataframe(met, hide_index=True, width="stretch", column_config={
+-        c_: st.column_config.NumberColumn(format="%.4f") for c_ in met.columns if c_ != "model"})
+-    l, r = st.columns([3, 2])
+-    with l:
+-        st.plotly_chart(charts.calibration_plot(bt["calibration"]), width="stretch")
+-    with r:
+-        per_cat = bt["categories"].groupby("category").apply(
+-            lambda d: pd.Series({"Brier (model)": np.mean((d.p_model - d.y) ** 2),
+-                                 "Brier (baseline)": np.mean((d.p_baseline - d.y) ** 2)}),
+-            include_groups=False).reindex(CATEGORY_NAMES)
+-        st.caption("Brier score by category (lower is better). Rate stats like STL and BLK are "
+-                   "noisier week to week, so expect them to be the hardest to call.")
+-        st.dataframe(per_cat, width="stretch",
+-                     column_config={k: st.column_config.NumberColumn(format="%.3f") for k in per_cat.columns})
+-
+-
+-WINDOWS = {"Blended (this season shrunk to last)": ("blend", 0), "This season": ("cur", 0),
+-           "Last 15 games": ("cur", 15), "Last 30 games": ("cur", 30), "Last season": ("prior", 0)}
++        future = load_future_weeks(KEY, META.current_week + 1, META.playoff_start_week - 1) \
++            if not SOURCE.is_demo else tw[tw["status"] == "preevent"]
++        live = tw[tw["week"] == META.current_week]
++        fut = pd.concat([live, future], ignore_index=True) if not future.empty else live
++        odds = season_sim(model, tw, fut, c["sig"]).set_index("team_key")
++        order = odds["playoff_odds"].sort_values(ascending=False).index
++        rows = []
++        for i, k in enumerate(order, 1):
++            if i == META.num_playoff_teams + 1:
++                rows.append('<div class="cut">Playoff line</div>')
++            rows.append(ui.row(e(NAMES.get(k, k)),
++                               f"Proj. {odds.at[k, 'exp_win_pct']:.3f}".replace("0.", ".") + f" · #1 seed {pct(odds.at[k, 'top_seed_odds'])}",
++                               pct(odds.at[k, "playoff_odds"]), lead=ui.rank(i), me=k == me,
++                               extra=ui.mini_bar(odds.at[k, "playoff_odds"])))
++        ui.group(rows)
++        ui.footnote(f"The rest of the season played out 2,000 times on the real schedule. "
++                    f"Top {META.num_playoff_teams} make it; exact ties are broken at random.")
++
++
++WINDOWS = {"Blended": ("blend", 0), "This season": ("cur", 0), "Last 15": ("cur", 15),
++           "Last 30": ("cur", 30), "Last season": ("prior", 0)}
+ 
+ 
+ def window_players(label: str) -> pd.DataFrame:
+@@ -394,236 +410,215 @@ def window_players(label: str) -> pd.DataFrame:
+     if kind == "blend":
+         return blended_players(SEASON)
+     df = load_players(SEASON if kind == "cur" else PRIOR, n)
+-    if not df.empty:
+-        df = df.assign(GP_TOT=df["GP"])
+-    return df
++    return df.assign(GP_TOT=df["GP"]) if not df.empty else df
+ 
+ 
+-def page_values():
+-    header("Player values", "9-cat z-scores against the rostered pool")
+-    c1, c2, c3 = st.columns([2, 3, 2])
+-    window = c1.selectbox("Stat window", list(WINDOWS), index=0)
+-    punts = c2.multiselect("Punt categories", CATEGORY_NAMES, help="Removed from the total and from pool selection")
+-    show = c3.selectbox("Show", ["All players", "Free agents only", "Rostered only"])
+-    players = window_players(window)
+-    if players.empty:
+-        st.warning("No NBA stats for this window yet (e.g. current season before opening night). "
+-                   "Try 'Blended' or 'Last season'.")
+-        return
+-    res = valuation(players, tuple(punts), META.num_teams, META.roster_size)
+-    table = res.table.copy()
+-    teams = load_teams(KEY)
+-    ros = matched_rosters(KEY, res.table)
+-    owner = dict(zip(ros.get("PLAYER_ID", []), ros.get("team_key", []))) if not ros.empty else {}
+-    names = dict(zip(teams["team_key"], teams["team_name"]))
+-    table["Owner"] = table["PLAYER_ID"].map(owner).map(names).fillna("FA")
+-    if show == "Free agents only":
+-        table = table[table["Owner"] == "FA"]
+-    elif show == "Rostered only":
+-        table = table[table["Owner"] != "FA"]
+-    q = st.text_input("Search player", "")
+-    if q:
+-        table = table[table["PLAYER_NAME"].str.contains(q, case=False)]
+-    cols = ["rank", "PLAYER_NAME", "TEAM", "Owner", "GP", "MIN", "value", "value_adj", *Z_COLS]
+-    if "blend_w" in table:
+-        cols.insert(6, "blend_w")
+-    cfg = {z: st.column_config.NumberColumn(z.replace("z_", ""), format="%+.2f") for z in Z_COLS}
+-    cfg.update({"rank": "Rk", "PLAYER_NAME": "Player", "MIN": st.column_config.NumberColumn(format="%.1f"),
+-                "GP": st.column_config.NumberColumn(format="%d"),
+-                "value": st.column_config.NumberColumn("Value/gm", format="%.2f",
+-                                                       help="Sum of z over non-punted categories"),
+-                "value_adj": st.column_config.NumberColumn("Avail-adj", format="%.2f",
+-                                                           help="Value × share of team games played"),
+-                "blend_w": st.column_config.NumberColumn("Cur wt", format="%.2f",
+-                                                         help="Weight on this season vs last (GP/(GP+15))")})
+-    st.dataframe(table[[c_ for c_ in cols if c_ in table]], hide_index=True, width="stretch",
+-                 height=620, column_config=cfg)
+-    st.caption(f"Pool = top {res.pool_size} players ({META.num_teams} teams × {META.roster_size} roster spots). "
+-               "FG%/FT% use impact (pct above pool average × attempts), so volume matters. "
+-               "Replacement level per category (z): " +
+-               ", ".join(f"{k} {v:+.2f}" for k, v in res.replacement.items()))
+-
+-
+-def _roster_picker(label: str, team_key: str, ros: pd.DataFrame, vals: pd.DataFrame, key: str) -> list:
+-    if not ros.empty and team_key in set(ros["team_key"]):
+-        options = ros[(ros["team_key"] == team_key) & ros["PLAYER_ID"].notna()]
+-        mapping = dict(zip(options["PLAYER_ID"], options["name"]))
+-    else:
+-        top = vals.head(400)
+-        mapping = dict(zip(top["PLAYER_ID"], top["PLAYER_NAME"]))
+-    return st.multiselect(label, list(mapping), format_func=lambda i: mapping.get(i, str(i)), key=key)
++def _top_cats(r: pd.Series, n: int = 2) -> str:
++    z = r[[c for c in Z_COLS if c in r.index]].astype(float)
++    return " ".join(c.replace("z_", "") for c in z.sort_values(ascending=False).index[:n] if z[c] > 0.3)
+ 
+ 
+-def page_trade():
+-    header("Trade analyzer", "category-aware, roster-spot-aware")
+-    c = core()
+-    names, ap = c["names"], c["ap"]
+-    keys = list(names)
+-    col1, col2 = st.columns(2)
+-    me = col1.selectbox("Your team", keys, format_func=names.get)
+-    them = col2.selectbox("Trade partner", [k for k in keys if k != me], format_func=names.get)
+-    punts = st.multiselect("Your punts", CATEGORY_NAMES, key="trade_punts")
+-    res = valuation(c["players"], tuple(punts), META.num_teams, META.roster_size)
+-    ros = matched_rosters(KEY, res.table)
+-    give = _roster_picker("You give", me, ros, res.table, "give")
+-    get = _roster_picker("You get", them, ros, res.table, "get")
+-    if not give and not get:
+-        st.caption("Pick players on both sides. Rosters load from Yahoo; before the draft you can "
+-                   "choose from the top 400 players.")
+-        return
+-    rates = ap["category_rates"]
+-    w_me = trade.context_weights(rates.loc[me] if me in rates.index else None, punts)
+-    w_them = trade.context_weights(rates.loc[them] if them in rates.index else None)
+-    mine = trade.evaluate_trade(res.table, give, get, res.replacement, w_me)
+-    theirs = trade.evaluate_trade(res.table, get, give, res.replacement, w_them)
+-    m1, m2, m3 = st.columns(3)
+-    m1.metric("Your weighted Δz", f"{mine.weighted_delta:+.2f}", f"raw {mine.raw_delta:+.2f}", delta_color="off")
+-    m2.metric(f"{names[them]} weighted Δz", f"{theirs.weighted_delta:+.2f}", f"raw {theirs.raw_delta:+.2f}",
+-              delta_color="off")
+-    m3.metric("Verdict", mine.verdict.split(":")[0])
+-    st.write(mine.verdict)
+-    if mine.weighted_delta > 0 and theirs.weighted_delta > 0:
+-        st.success("Both sides gain on their own weights: a genuine fit trade, the easiest kind to get accepted.")
+-    st.dataframe(mine.table, width="stretch", column_config={
+-        k: st.column_config.NumberColumn(format="%+.2f") for k in mine.table.columns})
+-    st.caption("Weights: `0.25 + 0.75 × 4p(1−p)` where p is your all-play win rate in the category, so swing "
+-               "categories count most and locked/punted ones least. Roster-spot adj prices the extra waiver "
+-               "pickup (or forced drop) in uneven trades at replacement level.")
+-
+-
+-def page_streaming():
+-    header("Streaming board", "who to add for the rest of this week")
++def page_players():
+     c = core()
+-    names, tw, model = c["names"], c["tw"], c["model"]
+-    me = st.selectbox("Your team", list(names), format_func=names.get)
++    me = my_team()
++    title_bar("Players")
++    view = st.segmented_control("View", ["Pickups", "Rankings"], default="Pickups", required=True,
++                                label_visibility="collapsed", key="players_view", width="stretch")
++    photos = not SOURCE.is_demo
++    if view == "Pickups":
++        _pickups(c, me, photos)
++    else:
++        _rankings(photos)
++
++
++def _pickups(c: dict, me: str | None, photos: bool):
++    tw, model = c["tw"], c["model"]
+     live = tw[tw["week"] == META.current_week]
+-    row = live[live["team_key"] == me]
+-    punts = st.multiselect("Ignore categories", CATEGORY_NAMES, key="stream_punts")
++    with st.popover("Ignore categories", icon=":material/tune:", type="tertiary"):
++        punts = st.pills("Ignore", CATEGORY_NAMES, selection_mode="multi", key="stream_punts",
++                         label_visibility="collapsed")
+     weights = trade.context_weights(None, punts)
+     week_end = TODAY
++    ctx = []
++    row = live[live["team_key"] == me] if me else live.iloc[0:0]
+     if not row.empty:
+         r = row.iloc[0]
+-        opp = live[live["team_key"] == r["opponent_key"]]
+-        if not opp.empty:
+-            pair = pd.concat([row, opp])
+-            sim = mm.live_matchups(model, pair.assign(matchup_id="x"), n_sims=3000)[0]
+-            p = sim.cat_prob if sim.team_a == me else 1 - sim.cat_prob
+-            weights = trade.context_weights(p, punts, floor=0.1)
+-            st.caption(f"vs **{names.get(r['opponent_key'])}** · P(win) {pct(sim.p_win if sim.team_a == me else sim.p_loss)}. "
+-                       "Categories are weighted by how contested they still are this week, so a streamer who "
+-                       "helps a 50/50 category outranks one who pads a category you've already locked.")
+-            st.dataframe(pd.DataFrame({"P(win cat)": p, "weight": weights}).T, width="stretch",
+-                         column_config={k: st.column_config.NumberColumn(format="%.2f") for k in CATEGORY_NAMES})
++        sims = week_sims(model, live, c["sig"])
++        mine = [s for s in sims if me in (s.team_a, s.team_b)]
++        if mine:
++            o = oriented(mine[0], live, me)
++            weights = trade.context_weights(o["cat"], punts, floor=0.1)
++            swing = [k for k, p in o["cat"].items() if 0.25 <= p <= 0.75 and k not in punts]
++            ctx.append(ui.row(f"vs {e(NAMES.get(o['kb'], ''))}", "Your chance to win the week", pct(o["pa"])))
++            ctx.append(ui.row("Swing categories", e(", ".join(swing) or "None, it's mostly decided")))
+         if isinstance(r["week_end"], str) and r["week_end"]:
+             week_end = date.fromisoformat(r["week_end"])
++    if ctx:
++        ui.group(ctx)
++    elif me is None:
++        ui.footnote("Set your team with the profile button and pickups get weighted toward the "
++                    "categories still in play in your matchup.")
++
+     games_left = nba_data.games_by_team(load_schedule(SEASON), TODAY, week_end)
+     fa = load_free_agents(KEY)
+     if fa.empty or c["vals"] is None:
+-        st.info("No free agents or player stats available yet.")
++        ui.footnote("No free agents or player stats yet.")
+         return
+     board = trade.streaming_board(fa, c["vals"].table, games_left, weights, c["vals"].replacement)
+-    st.dataframe(board.head(40), hide_index=True, width="stretch", height=600, column_config={
+-        "name": "Player", "eligible_positions": "Pos", "percent_owned": st.column_config.NumberColumn("% own"),
+-        "MIN": st.column_config.NumberColumn(format="%.1f"), "GP": st.column_config.NumberColumn(format="%d"),
+-        "games_left": st.column_config.NumberColumn("Games left", help=f"NBA games {TODAY:%b %d}–{week_end:%b %d}"),
+-        "value": st.column_config.NumberColumn("Value/gm", format="%.2f"),
+-        "weighted_per_game": st.column_config.NumberColumn("Wtd/gm vs repl", format="%+.2f"),
+-        "stream_score": st.column_config.ProgressColumn(
+-            "Stream score", format="%.2f", min_value=0,
+-            max_value=float(max(board["stream_score"].max(), 1e-6)) if not board.empty else 1.0),
+-        **{z: st.column_config.NumberColumn(z.replace("z_", ""), format="%+.1f") for z in Z_COLS}})
+-
+-
+-def page_free_agency():
+-    header("Free agency", "who works the wire, when, and whether it pays off")
+-    c = core()
+-    tx = load_transactions(KEY)
+-    if tx.empty:
+-        st.info("No transactions yet.")
+-        return
+-    holds = txa.pair_adds_drops(tx)
+-    act = txa.team_activity(tx, holds)
+-    adds = tx[tx["action"] == "add"]
+-    k1, k2, k3, k4 = st.columns(4)
+-    k1.metric("Adds this season", f"{len(adds):,}")
+-    k2.metric("Most active", act.iloc[0]["team_name"] if not act.empty else "–")
+-    k3.metric("Median hold", f"{holds['hold_days'].median():.1f} days" if not holds.empty else "–")
+-    k4.metric("Dropped within a week", pct(((holds["hold_days"] <= 7) & holds["dropped"]).mean())
+-              if not holds.empty else "–")
+-
+-    st.subheader("Activity by team")
+-    st.dataframe(act.drop(columns="team_key"), hide_index=True, width="stretch", column_config={
+-        "team_name": "Team", "add": "Adds", "drop": "Drops", "trade_players": "Players traded",
+-        "median_hold_days": st.column_config.NumberColumn("Median hold (days)", format="%.1f"),
+-        "stream_rate": st.column_config.ProgressColumn("Stream rate", format="percent", min_value=0, max_value=1,
+-                                                       help="Share of adds dropped within 7 days")})
+-    l, r = st.columns(2)
+-    with l:
+-        st.subheader("When moves happen")
+-        st.plotly_chart(charts.timing_heatmap(txa.timing_heatmap(tx)), width="stretch")
+-    with r:
+-        st.subheader("How long pickups last")
+-        st.plotly_chart(charts.hold_histogram(holds), width="stretch")
+-
+-    st.subheader("Does grinding the wire win?")
+-    avp = txa.activity_vs_performance(act, c["ap"]["summary"])
+-    if avp["n"] > 2:
+-        st.plotly_chart(charts.activity_scatter(avp["frame"]), width="stretch")
+-        st.caption(f"Spearman ρ = {avp['rho']:+.2f} across {avp['n']} teams. With this few teams, |ρ| needs to "
+-                   "be above ~0.63 to be distinguishable from noise at the 5% level, and causality runs both "
+-                   "ways (losing teams churn more).")
+-    st.subheader("Most-added players")
+-    st.dataframe(txa.hot_players(tx, holds), hide_index=True, width="stretch", column_config={
+-        "player_id": None, "player_name": "Player", "times_added": "Times added", "distinct_teams": "Teams",
+-        "last_added": st.column_config.DatetimeColumn("Last added", format="MMM D, h:mm a"),
+-        "median_hold_days": st.column_config.NumberColumn("Median hold (days)", format="%.1f")})
+-
+-
+-def page_compare():
+-    header("Player comparison")
+-    window = st.selectbox("Stat window", list(WINDOWS), index=0, key="cmp_window")
++    board = board[board["games_left"] > 0]
++    ui.section(f"Best adds through {week_end:%a %b %-d}")
++    n = show_more("pick_n", len(board), 15)
++    rows = []
++    for _, p in board.head(n).iterrows():
++        pos = str(p.get("eligible_positions", "")).replace(",", "/")
++        rows.append(ui.row(
++            e(p["name"]), e(f"{p.get('TEAM') or ''} · {pos} · {int(p['games_left'])} game{'s' if p['games_left'] != 1 else ''} left"),
++            signed(p["stream_score"]), f"{signed(p['weighted_per_game'], 2)} /game",
++            lead=ui.avatar(p["name"], p.get("PLAYER_ID"), photos),
++            e1_class=ui.sign_class(p["stream_score"])))
++    ui.group(rows)
++    more_button("pick_n", n, len(board), 15)
++    ui.footnote("Score = how much better than a waiver-level player each game is, times games left "
++                "this week, tilted toward your swing categories.")
++
++
++def _rankings(photos: bool):
++    with st.container(horizontal=True, vertical_alignment="center", key="searchrow"):
++        q = st.text_input("Search", placeholder="Search players", label_visibility="collapsed",
++                          key="rank_q")
++        with st.popover("", icon=":material/tune:", key="rank_filters"):
++            window = st.radio("Stats", list(WINDOWS), key="rank_window",
++                              help="Blended leans on last season until a player has ~15 games in.")
++            who = st.segmented_control("Show", ["All", "Free agents", "Rostered"], default="All",
++                                       required=True, key="rank_who")
++            punts = st.pills("Punt", CATEGORY_NAMES, selection_mode="multi", key="rank_punts")
+     players = window_players(window)
+     if players.empty:
+-        st.warning("No stats for this window yet.")
++        ui.footnote("No stats for this window yet. Try Blended or Last season.")
+         return
+-    options = players.sort_values("MIN", ascending=False)
+-    mapping = dict(zip(options["PLAYER_ID"], options["PLAYER_NAME"]))
+-    picks = st.multiselect("Players (2–5)", list(mapping), default=list(mapping)[:2],
+-                           format_func=lambda i: mapping[i], max_selections=5)
+-    if len(picks) < 2:
++    res = valuation(players, tuple(punts), META.num_teams, META.roster_size)
++    table = res.table
++    ros = matched_rosters(KEY, table)
++    owner = dict(zip(ros["PLAYER_ID"], ros["team_key"])) if not ros.empty else {}
++    table = table.assign(owner=table["PLAYER_ID"].map(owner))
++    if who == "Free agents":
++        table = table[table["owner"].isna()]
++    elif who == "Rostered":
++        table = table[table["owner"].notna()]
++    if q:
++        table = table[table["PLAYER_NAME"].str.contains(q, case=False, regex=False)]
++    sub = [window] + ([f"punting {', '.join(punts)}"] if punts else [])
++    ui.section(" · ".join(sub))
++    n = show_more("rank_n", len(table), 25)
++    rows = []
++    for _, p in table.head(n).iterrows():
++        own = NAMES.get(p["owner"], "Free agent") if p["owner"] == p["owner"] else "Free agent"
++        rows.append(ui.row(
++            e(p["PLAYER_NAME"]), e(f"{p.get('TEAM', '')} · {own}"),
++            signed(p["value"], 2), e(_top_cats(p)), lead=ui.rank(int(p["rank"])),
++            e1_class=ui.sign_class(p["value"])))
++    if rows:
++        ui.group(rows)
++    else:
++        ui.footnote("No players match.")
++    more_button("rank_n", n, len(table), 25)
++    ui.footnote("Value per game, in z-scores against the players worth rostering in a "
++                f"{META.num_teams}-team league. FG% and FT% count shot volume.")
++
++
++def _roster_options(team_key: str, ros: pd.DataFrame, vals: pd.DataFrame) -> dict:
++    if not ros.empty and team_key in set(ros["team_key"]):
++        o = ros[(ros["team_key"] == team_key) & ros["PLAYER_ID"].notna()]
++        return dict(zip(o["PLAYER_ID"], o["name"]))
++    top = vals.head(400)
++    return dict(zip(top["PLAYER_ID"], top["PLAYER_NAME"]))
++
++
++def page_trade():
++    c = core()
++    ap = c["ap"]
++    me = my_team()
++    title_bar("Trade")
++    if me is None:
++        ui.section("First, your team")
++        team_picker("me_trade", "Your team")
+         return
+-    sub = players[players["PLAYER_ID"].isin(picks)].copy()
+-    sub["FG%"] = sub["FGM"] / sub["FGA"].where(sub["FGA"] > 0)
+-    sub["FT%"] = sub["FTM"] / sub["FTA"].where(sub["FTA"] > 0)
+-    sub["Headshot"] = sub["PLAYER_ID"].map(
+-        lambda i: f"https://cdn.nba.com/headshots/nba/latest/1040x760/{int(i)}.png")
+-    res = valuation(players, (), META.num_teams, META.roster_size).table.set_index("PLAYER_ID")
+-    for z in Z_COLS + ["value"]:
+-        sub[z] = sub["PLAYER_ID"].map(res[z]) if z in res else np.nan
+-    cols = ["Headshot", "PLAYER_NAME", "TEAM", "GP", "MIN", "PTS", "REB", "AST", "STL", "BLK", "FG3M", "TOV",
+-            "FG%", "FT%", "FGA", "FTA", "value", *Z_COLS]
+-    st.dataframe(sub[[c_ for c_ in cols if c_ in sub]], hide_index=True, width="stretch", column_config={
+-        "Headshot": st.column_config.ImageColumn("", width="small"), "PLAYER_NAME": "Player",
+-        "FG%": st.column_config.NumberColumn(format="%.3f"), "FT%": st.column_config.NumberColumn(format="%.3f"),
+-        **{k: st.column_config.NumberColumn(format="%.1f") for k in
+-           ("MIN", "PTS", "REB", "AST", "STL", "BLK", "FG3M", "TOV", "FGA", "FTA")},
+-        "value": st.column_config.NumberColumn("Value/gm", format="%.2f"),
+-        **{z: st.column_config.NumberColumn(z.replace("z_", "z "), format="%+.2f") for z in Z_COLS}})
+-    st.caption("Shooting percentages are volume-weighted (total makes ÷ total attempts), not averages of "
+-               "per-game percentages.")
++    punts = st.session_state.get("trade_punts") or []
++    res = valuation(c["players"], tuple(punts), META.num_teams, META.roster_size)
++    ros = matched_rosters(KEY, res.table)
++
++    ui.section("You send")
++    mine_opts = _roster_options(me, ros, res.table)
++    give = st.multiselect("You send", list(mine_opts), format_func=lambda i: mine_opts.get(i, str(i)),
++                          placeholder="Players from your roster", label_visibility="collapsed", key="give",
++                          select_all=False, max_selections=5)
++    ui.section("Trade partner")
++    others = [k for k in NAMES if k != me]
++    them = st.pills("Partner", others, format_func=NAMES.get, key="partner",
++                    label_visibility="collapsed")
++    if them is None:
++        return
++    ui.section("You receive")
++    their_opts = _roster_options(them, ros, res.table)
++    get = st.multiselect("You receive", list(their_opts), format_func=lambda i: their_opts.get(i, str(i)),
++                         placeholder=f"Players from {NAMES[them]}", label_visibility="collapsed",
++                         key=f"get_{them}", select_all=False, max_selections=5)
++    with st.expander("Punting any categories?"):
++        st.pills("Punts", CATEGORY_NAMES, selection_mode="multi", key="trade_punts",
++                 label_visibility="collapsed")
++    if not give and not get:
++        return
++
++    rates = ap["category_rates"]
++    w_me = trade.context_weights(rates.loc[me] if me in rates.index else None, punts)
++    w_them = trade.context_weights(rates.loc[them] if them in rates.index else None)
++    mine = trade.evaluate_trade(res.table, give, get, res.replacement, w_me)
++    theirs = trade.evaluate_trade(res.table, get, give, res.replacement, w_them)
++    head, _, body = mine.verdict.partition(":")
++    both = mine.weighted_delta > 0 and theirs.weighted_delta > 0
++    if both:
++        body += ". They come out ahead too, so it should be an easy sell."
++    st.html(
++        '<div class="verdict">'
++        f'<div class="h">{e(head)}</div><div class="b">{e(body.strip().capitalize())}</div>'
++        '<div class="nums">'
++        f'<div class="n"><div class="k">You</div><div class="v {ui.sign_class(mine.weighted_delta)}">'
++        f'{signed(mine.weighted_delta)}</div></div>'
++        f'<div class="n"><div class="k">{e(NAMES[them])}</div><div class="v {ui.sign_class(theirs.weighted_delta)}">'
++        f'{signed(theirs.weighted_delta)}</div></div>'
++        "</div></div>")
++    ui.section("What changes for you, by category")
++    chips = []
++    for cat in CATEGORY_NAMES:
++        d = float(mine.table.at[cat, "delta"])
++        off = mine.table.at[cat, "weight"] == 0
++        chips.append(f'<div class="chip{" off" if off else ""}"><div class="k">{cat}</div>'
++                     f'<div class="v {"" if off else ui.sign_class(d)}">{signed(d)}</div></div>')
++    st.html('<div class="chips">' + "".join(chips) + "</div>")
++    ui.footnote("Per-game z-score change. The headline numbers weight each category by how close "
++                "that team is to 50/50 in it, and uneven trades are charged for the roster spot.")
+ 
+ 
+ # ======================================================================== navigation
+-st.logo("ryanlogo.png", link="https://rsandan.github.io", size="large")
+-nav = st.navigation({
+-    "League": [st.Page(page_home, title="This week", icon="🏠", default=True),
+-               st.Page(page_power, title="Power rankings", icon="📈"),
+-               st.Page(page_matchup_lab, title="Matchup lab", icon="🧪")],
+-    "Players": [st.Page(page_values, title="Player values", icon="🧮"),
+-                st.Page(page_trade, title="Trade analyzer", icon="🔁"),
+-                st.Page(page_streaming, title="Streaming board", icon="📅"),
+-                st.Page(page_free_agency, title="Free agency", icon="🗣️"),
+-                st.Page(page_compare, title="Player comparison", icon="⛹🏽")],
+-})
++PAGES = [
++    st.Page(page_week, title="This Week", icon=":material/sports_basketball:", default=True),
++    st.Page(page_standings, title="Standings", icon=":material/leaderboard:", url_path="standings"),
++    st.Page(page_players, title="Players", icon=":material/person_search:", url_path="players"),
++    st.Page(page_trade, title="Trade", icon=":material/swap_horiz:", url_path="trade"),
++]
++nav = st.navigation(PAGES, position="hidden")
++ui.inject()
++
++me = my_team()
++qp = {"team": _short(me)} if me else None
++if me:
++    st.query_params["team"] = _short(me)
++with st.container(horizontal=True, key="tabbar"):
++    for i, p in enumerate(PAGES):
++        with st.container(key=f"tab_{i}"):
++            st.page_link(p, label=p.title, icon=p.icon, query_params=qp)
++active = next((i for i, p in enumerate(PAGES) if p.title == nav.title), 0)
++st.html(f"<style>.st-key-tab_{active} a[data-testid='stPageLink-NavLink']"
++        "{color:var(--blue) !important}</style>")
++
+ nav.run()
+-st.caption(f"© {date.today().year} Ryan Sandan · [rsandan.github.io](https://rsandan.github.io)")
+diff --git a/fantasy/charts.py b/fantasy/charts.py
+deleted file mode 100644
+index e2631d2..0000000
+--- a/fantasy/charts.py
++++ /dev/null
+@@ -1,125 +0,0 @@
+-"""Plotly figure builders. Palette: validated reference categorical/diverging steps for a
+-dark surface (the app runs Streamlit's dark theme). Rules followed: one axis per chart,
+-thin marks, recessive grid, diverging scales centred on a neutral gray, text in ink
+-colours rather than series colours, hover on every mark."""
+-from __future__ import annotations
+-
+-import numpy as np
+-import pandas as pd
+-import plotly.graph_objects as go
+-
+-SURFACE = "#1a1a19"
+-INK = "#ffffff"
+-INK_2 = "#c3c2b7"
+-GRID = "#383835"
+-BLUE = "#3987e5"       # categorical slot 1 / diverging positive pole
+-ORANGE = "#d95926"     # categorical slot 2
+-RED = "#e66767"        # diverging negative pole
+-NEUTRAL = "#383835"    # diverging midpoint
+-SEQ_BLUE = ["#0d366b", "#184f95", "#256abf", "#3987e5", "#6da7ec", "#9ec5f4"]
+-DIVERGING = [[0.0, RED], [0.5, NEUTRAL], [1.0, BLUE]]
+-
+-
+-def _base(fig: go.Figure, height: int = 380) -> go.Figure:
+-    fig.update_layout(
+-        template="plotly_dark", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+-        font=dict(color=INK_2, size=12), height=height, margin=dict(l=10, r=10, t=30, b=10),
+-        hoverlabel=dict(bgcolor=SURFACE, font_color=INK), showlegend=False,
+-    )
+-    fig.update_xaxes(gridcolor=GRID, zerolinecolor=GRID)
+-    fig.update_yaxes(gridcolor=GRID, zerolinecolor=GRID)
+-    return fig
+-
+-
+-def luck_bars(df: pd.DataFrame, value_col: str, label_col: str = "team_name") -> go.Figure:
+-    d = df.sort_values(value_col)
+-    colors = [BLUE if v >= 0 else RED for v in d[value_col]]
+-    fig = go.Figure(go.Bar(
+-        x=d[value_col], y=d[label_col], orientation="h", marker_color=colors,
+-        marker_line_width=0, hovertemplate="%{y}: %{x:+.1%}<extra></extra>"))
+-    fig.update_xaxes(tickformat="+.0%", title="Actual win% minus all-play win%")
+-    return _base(fig, 40 * len(d) + 60)
+-
+-
+-def category_heatmap(rates: pd.DataFrame, names: dict[str, str]) -> go.Figure:
+-    z = rates.values
+-    fig = go.Figure(go.Heatmap(
+-        z=z, x=list(rates.columns), y=[names.get(i, i) for i in rates.index],
+-        colorscale=DIVERGING, zmid=0.5, zmin=0, zmax=1, xgap=2, ygap=2,
+-        text=np.vectorize(lambda v: f"{v:.0%}")(z), texttemplate="%{text}",
+-        textfont=dict(color=INK, size=11),
+-        hovertemplate="%{y} · %{x}: wins %{z:.0%} of all-play category matchups<extra></extra>",
+-        colorbar=dict(tickformat=".0%", title="")))
+-    return _base(fig, 36 * len(rates) + 80)
+-
+-
+-def probability_bars(df: pd.DataFrame, value_col: str, label_col: str = "team_name",
+-                     title: str = "") -> go.Figure:
+-    d = df.sort_values(value_col)
+-    fig = go.Figure(go.Bar(
+-        x=d[value_col], y=d[label_col], orientation="h", marker_color=BLUE, marker_line_width=0,
+-        text=[f"{v:.0%}" for v in d[value_col]], textposition="outside", textfont=dict(color=INK_2),
+-        hovertemplate="%{y}: %{x:.1%}<extra></extra>"))
+-    fig.update_xaxes(range=[0, 1.12], tickformat=".0%", title=title)
+-    return _base(fig, 40 * len(d) + 60)
+-
+-
+-def calibration_plot(cal: pd.DataFrame) -> go.Figure:
+-    fig = go.Figure()
+-    fig.add_trace(go.Scatter(x=[0, 1], y=[0, 1], mode="lines", line=dict(color=INK_2, dash="dot", width=1),
+-                             hoverinfo="skip", name="Perfect calibration"))
+-    fig.add_trace(go.Scatter(
+-        x=cal["mean_pred"], y=cal["observed"], mode="lines+markers", line=dict(color=BLUE, width=2),
+-        marker=dict(size=9 + 10 * cal["n"] / max(cal["n"].max(), 1), color=BLUE,
+-                    line=dict(color=SURFACE, width=2)),
+-        customdata=cal["n"], name="Model",
+-        hovertemplate="Predicted %{x:.0%} → happened %{y:.0%} (n=%{customdata})<extra></extra>"))
+-    fig.update_xaxes(range=[0, 1], tickformat=".0%", title="Predicted category win probability")
+-    fig.update_yaxes(range=[0, 1], tickformat=".0%", title="Observed win rate")
+-    fig = _base(fig, 420)
+-    fig.update_layout(showlegend=True, legend=dict(orientation="h", y=1.08, x=0))
+-    return fig
+-
+-
+-def timing_heatmap(grid: pd.DataFrame) -> go.Figure:
+-    fig = go.Figure(go.Heatmap(
+-        z=grid.values, x=[f"{h:02d}:00" for h in grid.columns], y=list(grid.index),
+-        colorscale=[[0, SURFACE], [0.25, "#184f95"], [0.5, "#256abf"], [0.75, BLUE], [1, "#9ec5f4"]],
+-        xgap=2, ygap=2, hovertemplate="%{y} %{x}: %{z} adds<extra></extra>", colorbar=dict(title="")))
+-    fig.update_xaxes(title="Hour (ET)")
+-    fig.update_yaxes(autorange="reversed")  # Monday on top, like a calendar
+-    return _base(fig, 300)
+-
+-
+-def activity_scatter(frame: pd.DataFrame) -> go.Figure:
+-    fig = go.Figure(go.Scatter(
+-        x=frame["add"], y=frame["ap_pct"], mode="markers+text", text=frame["team_name"],
+-        textposition="top center", textfont=dict(color=INK_2, size=11),
+-        marker=dict(size=11, color=BLUE, line=dict(color=SURFACE, width=2)),
+-        hovertemplate="%{text}<br>%{x} adds · all-play %{y:.1%}<extra></extra>"))
+-    fig.update_xaxes(title="Players added")
+-    fig.update_yaxes(title="All-play win%", tickformat=".0%")
+-    return _base(fig, 420)
+-
+-
+-def hold_histogram(holds: pd.DataFrame) -> go.Figure:
+-    d = holds[holds["dropped"]]
+-    fig = go.Figure(go.Histogram(x=d["hold_days"], xbins=dict(start=0, size=1), marker_color=BLUE,
+-                                 marker_line=dict(color=SURFACE, width=2),
+-                                 hovertemplate="%{x} days: %{y} pickups<extra></extra>"))
+-    fig.update_xaxes(title="Days rostered before being dropped")
+-    fig.update_yaxes(title="Pickups")
+-    return _base(fig, 320)
+-
+-
+-def category_win_bars(cat_prob: pd.Series, team_a: str, team_b: str) -> go.Figure:
+-    """Diverging bars: P(A wins category) - 0.5, so the zero line is a coin flip."""
+-    p = cat_prob
+-    fig = go.Figure(go.Bar(
+-        x=p.values - 0.5, y=list(p.index), orientation="h", base=0.5,
+-        marker_color=[BLUE if v >= 0.5 else ORANGE for v in p.values], marker_line_width=0,
+-        hovertemplate=[f"{c}: {team_a} {v:.0%} · {team_b} {1 - v:.0%}<extra></extra>"
+-                       for c, v in p.items()]))
+-    fig.update_xaxes(range=[0, 1], tickformat=".0%", title=f"← {team_b}   ·   {team_a} →")
+-    fig.update_yaxes(autorange="reversed")
+-    return _base(fig, 320)
+diff --git a/fantasy/trade.py b/fantasy/trade.py
+index 92f9df2..bad7a7a 100644
+--- a/fantasy/trade.py
++++ b/fantasy/trade.py
+@@ -109,7 +109,7 @@ def streaming_board(free_agents: pd.DataFrame, values: pd.DataFrame, games_left:
+     wz = sum((fa[f"z_{c}"] - repl.get(c, 0.0)) * weights.get(c, 1.0) for c in CATEGORY_NAMES)
+     fa["weighted_per_game"] = wz
+     fa["stream_score"] = wz * fa["games_left"]
+-    cols = ["name", "TEAM", "eligible_positions", "percent_owned", "status", "games_left",
++    cols = ["PLAYER_ID", "name", "TEAM", "eligible_positions", "percent_owned", "status", "games_left",
+             "GP", "MIN", "value", "weighted_per_game", "stream_score", *Z_COLS]
+     cols = [c for c in cols if c in fa.columns]
+     return fa[cols].sort_values("stream_score", ascending=False).reset_index(drop=True)
+diff --git a/fantasy/ui.py b/fantasy/ui.py
+new file mode 100644
+index 0000000..3236cd3
+--- /dev/null
++++ b/fantasy/ui.py
+@@ -0,0 +1,267 @@
++"""Mobile UI kit: iOS-style components rendered as HTML inside Streamlit.
++
++Design rules (iPhone first):
++- Follow the system appearance. Colors are iOS system colors, switched by
++  `prefers-color-scheme`, matching the light/dark themes in .streamlit/config.toml.
++- Numbers are the interface. Big tabular figures, labels in secondary gray.
++- Inset grouped lists instead of data tables: nothing scrolls sideways.
++- Color is never the only cue: every +/- carries a sign, every probability a number.
++- Tap targets are 44pt or taller, inputs are 16px so Safari doesn't zoom on focus.
++"""
++from __future__ import annotations
++
++from html import escape
++
++import streamlit as st
++
++CSS = """
++<style>
++:root {
++  --bg:#f2f2f7; --card:#ffffff; --sep:rgba(60,60,67,.18); --label:#000; --label2:rgba(60,60,67,.6);
++  --label3:rgba(60,60,67,.35); --fill:rgba(120,120,128,.16); --fill2:rgba(120,120,128,.08);
++  --blue:#007aff; --green:#248a3d; --red:#d70015; --bar:rgba(249,249,249,.94); --seg:#fff; --tab:#8e8e93;
++}
++@media (prefers-color-scheme: dark) {
++  :root {
++    --bg:#000; --card:#1c1c1e; --sep:rgba(84,84,88,.65); --label:#fff; --label2:rgba(235,235,245,.6);
++    --label3:rgba(235,235,245,.3); --fill:rgba(120,120,128,.36); --fill2:rgba(120,120,128,.18);
++    --blue:#0a84ff; --green:#30d158; --red:#ff453a; --bar:rgba(22,22,24,.94); --seg:#636366; --tab:#8e8e93;
++  }
++}
++html, body, .stApp { -webkit-text-size-adjust:100%; touch-action:manipulation;
++  font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
++.stApp { background:var(--bg); }
++
++/* Streamlit chrome off: this is an app, not a notebook */
++header[data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"],
++[data-testid="stSidebarCollapsedControl"], footer, #MainMenu, .stAppDeployButton { display:none !important; }
++[data-testid="stMainBlockContainer"] { padding:calc(8px + env(safe-area-inset-top)) 16px
++  calc(104px + env(safe-area-inset-bottom)) !important; max-width:620px; }
++[data-testid="stVerticalBlock"] { gap:.75rem; }
++
++/* 16px inputs: iOS Safari zooms the page on focus below that */
++input, textarea, select, [data-baseweb="select"] * { font-size:16px !important; }
++button[kind], [data-testid="stPopover"] button { min-height:44px; }
++
++.st-key-titlebar { flex-wrap:nowrap !important; align-items:flex-start !important; }
++.st-key-titlebar [data-testid="stPopover"] { margin-top:4px; }
++.st-key-titlebar [data-testid="stPopover"] button [data-testid="stIconMaterial"] { font-size:30px; color:var(--blue); }
++.st-key-titlebar [data-testid="stPopover"] button > div > div:last-child:not(:first-child) { display:none; }
++
++/* ---------- tab bar ---------- */
++.st-key-tabbar { position:fixed; left:0; right:0; bottom:0; z-index:1000; background:var(--bar);
++  -webkit-backdrop-filter:saturate(180%) blur(20px); backdrop-filter:saturate(180%) blur(20px);
++  border-top:.5px solid var(--sep); padding:6px 4px calc(4px + env(safe-area-inset-bottom)) !important;
++  justify-content:space-around !important; flex-wrap:nowrap !important; gap:0 !important; }
++.st-key-tabbar > div { flex:1 1 0 !important; min-width:0 !important; width:auto !important; }
++.st-key-tabbar a[data-testid="stPageLink-NavLink"] { flex-direction:column; gap:1px; padding:4px 0 2px;
++  width:100%; justify-content:center; align-items:center; background:transparent !important;
++  color:var(--tab) !important; min-height:48px; border-radius:0; }
++.st-key-tabbar a[data-testid="stPageLink-NavLink"] span[data-testid="stIconMaterial"] { font-size:27px;
++  margin:0 !important; color:inherit !important; }
++.st-key-tabbar a[data-testid="stPageLink-NavLink"] p { font-size:10px !important; font-weight:500;
++  letter-spacing:.1px; color:inherit !important; line-height:1.2; margin:0; }
++.st-key-tabbar .tab-active a[data-testid="stPageLink-NavLink"],
++.st-key-tabbar a[data-testid="stPageLink-NavLink"][aria-current="page"] { color:var(--blue) !important; }
++
++/* ---------- typography ---------- */
++.lt { margin:4px 0 0; }
++.lt .h1 { font-size:34px; line-height:41px; font-weight:700; letter-spacing:.37px; color:var(--label); }
++.lt .sub { font-size:15px; color:var(--label2); margin-top:2px; }
++.live { color:var(--red); font-weight:600; }
++.live i { display:inline-block; width:7px; height:7px; border-radius:50%; background:var(--red);
++  margin-right:5px; vertical-align:1px; animation:pulse 2s ease-in-out infinite; }
++@keyframes pulse { 50% { opacity:.35; } }
++@media (prefers-reduced-motion: reduce) { .live i { animation:none; } }
++.sh { font-size:13px; text-transform:uppercase; letter-spacing:-.08px; color:var(--label2);
++  margin:10px 16px -4px; }
++.foot { font-size:13px; color:var(--label2); margin:-2px 16px 0; line-height:1.4; }
++.num { font-variant-numeric:tabular-nums; }
++
++/* ---------- inset grouped list ---------- */
++.list { background:var(--card); border-radius:12px; overflow:hidden; }
++.row { display:flex; align-items:center; gap:12px; padding:10px 16px; min-height:44px; position:relative; }
++.row + .row::before { content:""; position:absolute; top:0; right:0; left:16px; border-top:.5px solid var(--sep); }
++.row.me { background:var(--fill2); }
++.row .rk { width:22px; text-align:center; font-size:15px; color:var(--label2); font-variant-numeric:tabular-nums; }
++.row .main { flex:1; min-width:0; }
++.row .t1 { font-size:17px; color:var(--label); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
++.row .t2 { font-size:13px; color:var(--label2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px; }
++.row .end { text-align:right; flex:none; }
++.row .e1 { font-size:17px; font-weight:600; color:var(--label); font-variant-numeric:tabular-nums; }
++.row .e2 { font-size:13px; color:var(--label2); font-variant-numeric:tabular-nums; margin-top:1px; }
++.row .you { font-size:11px; font-weight:600; color:var(--blue); margin-left:6px; vertical-align:1px; }
++.cut { font-size:12px; font-weight:600; color:var(--blue); text-transform:uppercase; letter-spacing:.3px;
++  padding:6px 16px; background:var(--fill2); border-top:.5px solid var(--sep); border-bottom:.5px solid var(--sep); }
++.mini { height:4px; border-radius:2px; background:var(--fill); margin-top:6px; overflow:hidden; }
++.mini > span { display:block; height:100%; background:var(--blue); border-radius:2px; }
++.pos { color:var(--green) !important; } .neg { color:var(--red) !important; }
++
++/* ---------- avatars ---------- */
++.av { width:40px; height:40px; border-radius:50%; flex:none; background:var(--fill) center 20%/cover no-repeat;
++  display:flex; align-items:center; justify-content:center; font-size:15px; font-weight:600; color:var(--label2); }
++
++/* ---------- scoreboard (matchup hero) ---------- */
++.hero { background:var(--card); border-radius:16px; padding:16px 16px 6px; }
++.hero .top { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); align-items:end; gap:8px; }
++.hero .tn { font-size:15px; font-weight:600; color:var(--label); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
++.hero .r { text-align:right; }
++.hero .big { font-size:44px; line-height:1.05; font-weight:700; letter-spacing:-.5px; font-variant-numeric:tabular-nums; }
++.hero .dim { color:var(--label3); }
++.hero .mid { text-align:center; padding-bottom:6px; }
++.hero .score { white-space:nowrap; font-size:22px; font-weight:600; font-variant-numeric:tabular-nums; color:var(--label); }
++.hero .cap { font-size:12px; color:var(--label2); }
++.bar { display:flex; height:6px; border-radius:3px; overflow:hidden; background:var(--fill); margin:12px 0 4px; }
++.bar > span { background:var(--blue); }
++.hero .meta { font-size:12px; color:var(--label2); text-align:center; margin-bottom:6px; }
++.cat { display:grid; grid-template-columns:minmax(0,1fr) 96px minmax(0,1fr); align-items:center; padding:7px 0;
++  border-top:.5px solid var(--sep); }
++.cat .v { font-size:17px; line-height:22px; font-variant-numeric:tabular-nums; color:var(--label2); }
++.cat .v.lead { color:var(--label); font-weight:600; }
++.cat .v.r { text-align:right; }
++.cat .p { font-size:11px; line-height:13px; color:var(--label2); font-variant-numeric:tabular-nums; }
++.cat .c { text-align:center; }
++.cat .cn { font-size:13px; line-height:16px; font-weight:600; color:var(--label); }
++.cat .mini { margin:3px 10px 2px; }
++.cat .proj { font-size:11px; line-height:13px; color:var(--label3); }
++
++/* ---------- trade chips ---------- */
++.chips { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; }
++.chip { background:var(--card); border-radius:10px; padding:8px 10px; }
++.chip .k { font-size:12px; color:var(--label2); font-weight:600; }
++.chip .v { font-size:17px; font-weight:600; font-variant-numeric:tabular-nums; color:var(--label); }
++.chip.off { opacity:.45; }
++.verdict { background:var(--card); border-radius:16px; padding:16px; }
++.verdict .h { font-size:22px; font-weight:700; color:var(--label); }
++.verdict .b { font-size:15px; color:var(--label2); margin-top:4px; line-height:1.35; }
++.verdict .nums { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:12px; }
++.verdict .n .k { font-size:12px; color:var(--label2); }
++.verdict .n .v { font-size:28px; font-weight:700; font-variant-numeric:tabular-nums; }
++
++/* native widgets: soften to match, 44pt rows for radio lists */
++[data-testid="stRadioGroup"] { gap:0 !important; width:100%; }
++[data-testid="stRadioGroup"] > div { width:100%; }
++[data-testid="stRadio"], [data-testid="stElementContainer"]:has(> [data-testid="stRadio"]) { width:100% !important; }
++[data-testid="stRadioOption"] { min-height:44px; display:flex; align-items:center; margin:0 !important; width:100%; }
++[data-testid="stRadioGroup"] > div + div { border-top:.5px solid var(--sep); }
++[data-testid="stRadioOption"] p { font-size:17px !important; }
++.st-key-onboard { background:var(--card); border-radius:12px; padding:10px 16px 4px; }
++[data-testid="stExpander"] details { background:var(--card); border:none !important; border-radius:12px; }
++[data-testid="stExpander"] summary { min-height:48px; }
++[data-testid="stExpander"] [data-testid="stExpanderDetails"] { padding-left:12px; padding-right:12px; }
++@media (max-width:380px) { .hero .big { font-size:36px; } }
++/* iOS segmented control: gray track, raised thumb */
++[data-testid="stButtonGroup"] [role="radiogroup"]:has(> button[data-variant="segmented_control"]) {
++  display:flex; width:100%; background:var(--fill); border-radius:9px; padding:2px; gap:0; }
++button[data-variant="segmented_control"] { flex:1 1 0; min-height:32px; border:none !important;
++  background:transparent !important; border-radius:7px !important; color:var(--label) !important;
++  box-shadow:none !important; margin:0 !important; }
++button[data-variant="segmented_control"] p { font-size:13px !important; font-weight:500; }
++button[data-variant="segmented_control"][aria-checked="true"] { background:var(--seg) !important;
++  box-shadow:0 3px 8px rgba(0,0,0,.12), 0 3px 1px rgba(0,0,0,.04) !important; }
++button[data-variant="segmented_control"][aria-checked="true"] p { font-weight:600; }
++</style>
++"""
++
++HEAD_JS = """
++<script>
++(function () {
++  const d = window.parent && window.parent.document ? window.parent.document : document;
++  const add = (tag, attrs) => {
++    const key = attrs.name || attrs.rel;
++    if (d.head.querySelector(`${tag}[${attrs.name ? 'name' : 'rel'}="${key}"]`)) return;
++    const el = d.createElement(tag); Object.entries(attrs).forEach(([k, v]) => el.setAttribute(k, v));
++    d.head.appendChild(el);
++  };
++  const vp = d.head.querySelector('meta[name="viewport"]');
++  if (vp && !vp.content.includes('viewport-fit')) vp.content += ', viewport-fit=cover';
++  add('meta', {name: 'apple-mobile-web-app-capable', content: 'yes'});
++  add('meta', {name: 'mobile-web-app-capable', content: 'yes'});
++  add('meta', {name: 'apple-mobile-web-app-status-bar-style', content: 'default'});
++  add('meta', {name: 'apple-mobile-web-app-title', content: 'Love Island'});
++  add('link', {rel: 'apple-touch-icon', href: './app/static/apple-touch-icon.png'});
++})();
++</script>
++"""
++
++
++def inject():
++    st.html(CSS)
++    st.html(HEAD_JS, unsafe_allow_javascript=True)
++
++
++# ------------------------------------------------------------------ helpers
++def e(x) -> str:
++    return escape(str(x))
++
++
++def pct(x) -> str:
++    """Probability label that never claims certainty a simulation can't support."""
++    if x is None or x != x:
++        return "–"
++    if x < 0.005:
++        return "<1%"
++    if x > 0.995:
++        return ">99%"
++    return f"{x:.0%}"
++
++
++def signed(x: float, nd: int = 1) -> str:
++    return "–" if x != x else f"{x:+.{nd}f}".replace("-", "−")
++
++
++def sign_class(x: float, eps: float = 0.05) -> str:
++    return "pos" if x > eps else "neg" if x < -eps else ""
++
++
++def initials(name: str) -> str:
++    parts = [p for p in str(name).replace(".", " ").split() if p]
++    return "".join(p[0] for p in parts[:2]).upper() or "?"
++
++
++def avatar(name: str, nba_id=None, photo: bool = True) -> str:
++    if photo and nba_id is not None and nba_id == nba_id:
++        url = f"https://cdn.nba.com/headshots/nba/latest/260x190/{int(nba_id)}.png"
++        return f'<div class="av" style="background-image:url(\'{url}\')"></div>'
++    return f'<div class="av">{e(initials(name))}</div>'
++
++
++# --------------------------------------------------------------- components
++def large_title(title: str, sub: str = "", live: bool = False) -> str:
++    """iOS large title. `sub` must be escaped by the caller. A live week gets a red dot."""
++    dot = '<span class="live"><i></i>Live</span> · ' if live else ""
++    s = f'<div class="sub">{dot}{sub}</div>' if sub or live else ""
++    return f'<div class="lt"><div class="h1">{e(title)}</div>{s}</div>'
++
++
++def section(title: str) -> None:
++    st.html(f'<div class="sh">{e(title)}</div>')
++
++
++def footnote(text: str) -> None:
++    st.html(f'<div class="foot">{text}</div>')
++
++
++def row(t1: str, t2: str = "", e1: str = "", e2: str = "", lead: str = "", me: bool = False,
++        e1_class: str = "", extra: str = "") -> str:
++    """One list row. t1/e1 etc. must already be escaped where they contain user text."""
++    you = '<span class="you">YOU</span>' if me else ""
++    return (f'<div class="row{" me" if me else ""}">{lead}'
++            f'<div class="main"><div class="t1">{t1}{you}</div>'
++            + (f'<div class="t2">{t2}</div>' if t2 else "") + extra + "</div>"
++            + (f'<div class="end"><div class="e1 {e1_class}">{e1}</div>'
++               + (f'<div class="e2">{e2}</div>' if e2 else "") + "</div>" if e1 or e2 else "")
++            + "</div>")
++
++
++def rank(n: int) -> str:
++    return f'<div class="rk">{n}</div>'
++
++
++def mini_bar(p: float) -> str:
++    p = 0.0 if p != p else max(0.0, min(1.0, p))
++    return f'<div class="mini"><span style="width:{p * 100:.1f}%"></span></div>'
++
++
++def group(rows: list[str]) -> None:
++    st.html('<div class="list">' + "".join(rows) + "</div>")
+diff --git a/requirements.txt b/requirements.txt
+index c83b9b4..463c6e0 100644
+--- a/requirements.txt
++++ b/requirements.txt
+@@ -3,8 +3,7 @@ yahoo_oauth>=2.1
+ yahoo_fantasy_api>=2.12
+ nba_api>=1.10
+ # App + analytics
+-streamlit>=1.50
++streamlit>=1.60
+ pandas>=2.2
+ numpy>=1.26
+-plotly>=5.20
+ tzdata>=2024.1
+diff --git a/static/apple-touch-icon.png b/static/apple-touch-icon.png
+new file mode 100644
+index 0000000000000000000000000000000000000000..5876079e4feaa845afe284707f28bbd86a4f930e
+GIT binary patch
+literal 26825
+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
+
+literal 0
+HcmV?d00001
+
+diff --git a/tests/test_app.py b/tests/test_app.py
+index b02d84b..ff5a292 100644
+--- a/tests/test_app.py
++++ b/tests/test_app.py
+@@ -1,4 +1,5 @@
+-"""Smoke test: every page renders without exceptions on the demo league."""
++"""Smoke test: every page renders without exceptions on the demo league, both for a
++first-time visitor and for someone whose team is saved in the link (?team=1)."""
+ from pathlib import Path
+ 
+ import pytest
+@@ -7,20 +8,22 @@ pytest.importorskip("streamlit")
+ from streamlit.testing.v1 import AppTest  # noqa: E402
+ 
+ ROOT = Path(__file__).resolve().parents[1]
+-PAGES = ["page_home", "page_power", "page_matchup_lab", "page_values", "page_trade",
+-         "page_streaming", "page_free_agency", "page_compare"]
++PAGES = ["page_week", "page_standings", "page_players", "page_trade"]
+ 
+ 
++@pytest.mark.parametrize("team", [None, "1"])
+ @pytest.mark.parametrize("page", PAGES)
+-def test_page_renders(page, monkeypatch):
++def test_page_renders(page, team, monkeypatch):
+     monkeypatch.setenv("FANTASY_DEMO", "1")
+     src = (ROOT / "app.py").read_text().replace("nav.run()", f"{page}()")
+-    script = ROOT / f"_pagetest_{page}.py"   # same dir so relative assets (logo) resolve
++    script = ROOT / f"_pagetest_{page}.py"   # same dir so relative assets resolve
+     script.write_text(src)
+     try:
+         at = AppTest.from_file(str(script), default_timeout=300)
++        if team:
++            at.query_params["team"] = team
+         at.run()
+         assert not at.exception, [e.value for e in at.exception]
+-        assert at.title, "page should render a title"
++        assert len(at.main.children) > 2, "page should render content"
+     finally:
+         script.unlink(missing_ok=True)
