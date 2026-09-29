@@ -109,7 +109,7 @@ def streaming_board(free_agents: pd.DataFrame, values: pd.DataFrame, games_left:
     wz = sum((fa[f"z_{c}"] - repl.get(c, 0.0)) * weights.get(c, 1.0) for c in CATEGORY_NAMES)
     fa["weighted_per_game"] = wz
     fa["stream_score"] = wz * fa["games_left"]
-    cols = ["name", "TEAM", "eligible_positions", "percent_owned", "status", "games_left",
+    cols = ["PLAYER_ID", "name", "TEAM", "eligible_positions", "percent_owned", "status", "games_left",
             "GP", "MIN", "value", "weighted_per_game", "stream_score", *Z_COLS]
     cols = [c for c in cols if c in fa.columns]
     return fa[cols].sort_values("stream_score", ascending=False).reset_index(drop=True)
