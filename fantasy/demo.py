@@ -244,7 +244,9 @@ def make_transactions(rng, keys, names, players, season_start, weeks):
                              "player_id": int(p["PLAYER_ID"]) % 100000, "player_name": p["PLAYER_NAME"],
                              "nba_team": p["TEAM"], "transaction_id": str(tid + 100000)})
             tid += 1
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(rows, columns=["transaction_id", "transaction_type", "status", "team_key",
+                                     "team_name", "source_type", "timestamp", "action",
+                                     "player_id", "player_name", "nba_team"])
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True).dt.tz_convert(tz)
     return df.sort_values("timestamp").reset_index(drop=True)
 

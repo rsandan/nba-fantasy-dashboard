@@ -79,29 +79,76 @@ def authenticate():
     return sc
 
 
-def discover_league(sc, league_id: str | None = None, league_key: str | None = None):
-    """Find the league to load, newest season first.
+def _collect(raw: Any, field: str) -> list[str]:
+    """Every string value of ``field`` anywhere in a Yahoo JSON document."""
+    found: list[str] = []
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            if k == field and isinstance(v, str):
+                found.append(v)
+            else:
+                found.extend(_collect(v, field))
+    elif isinstance(raw, list):
+        for v in raw:
+            found.extend(_collect(v, field))
+    return found
 
-    ``YAHOO_LEAGUE_KEY`` pins an exact key (``466.l.12345``). ``YAHOO_LEAGUE_ID`` matches the
-    numeric id; because renewed leagues usually get a new id, we fall back to the most
-    recent NBA league the logged-in user belongs to.
+
+def _team_key_to_league_key(team_key: str) -> str:
+    """``'466.l.12345.t.3'`` -> ``'466.l.12345'``."""
+    return team_key.split(".t.")[0]
+
+
+def _my_nba_league_keys(gm) -> list[str]:
+    """League keys for every NBA league the logged-in user is in, newest game first.
+
+    Why not ``Game.league_ids()``: yahoo_fantasy_api 2.12 builds that request as
+    ``users/games/leagues?use_login=1&...``. Yahoo only understands ``use_login`` as a
+    *matrix* parameter (``users;use_login=1``). As a query string it's ignored, the
+    request becomes "leagues for all users", and Yahoo answers 401 *"This application
+    is not authorized to perform this action"*. That was the opening-night outage.
+    """
+    keys: list[str] = []
+    try:
+        keys = _collect(gm.yhandler.get("users;use_login=1/games;game_codes=nba/leagues"), "league_key")
+    except Exception as exc:
+        log.warning("Yahoo leagues lookup failed (%s); trying the teams endpoint.", exc)
+    if not keys:
+        # Same information, different route: the user's teams carry their league keys.
+        raw = gm.yhandler.get("users;use_login=1/games;game_codes=nba/teams")
+        keys = [_team_key_to_league_key(k) for k in _collect(raw, "team_key")]
+    return sorted(set(keys), key=lambda k: int(k.split(".")[0]), reverse=True)
+
+
+def discover_league(sc, league_id: str | None = None, league_key: str | None = None):
+    """Find the league to load.
+
+    * ``YAHOO_LEAGUE_KEY`` pins an exact key (``466.l.12345``). No lookup at all.
+    * ``YAHOO_LEAGUE_ID`` (the number in your league's URL) is combined with this season's
+      NBA game key. Only the public ``game/nba`` endpoint is called, so it keeps working
+      even if the user-leagues lookup breaks, and it rolls to the new season on its own
+      as long as the league is renewed with the same id.
+    * Otherwise: the newest NBA league the logged-in user belongs to.
     """
     import yahoo_fantasy_api as yfa
 
-    league_key = league_key or os.getenv("YAHOO_LEAGUE_KEY")
-    league_id = league_id or os.getenv("YAHOO_LEAGUE_ID")
+    league_key = (league_key or os.getenv("YAHOO_LEAGUE_KEY") or "").strip()
+    league_id = (league_id or os.getenv("YAHOO_LEAGUE_ID") or "").strip()
     gm = yfa.Game(sc, "nba")
     if league_key:
         return gm.to_league(league_key)
-    keys = gm.league_ids(game_codes=["nba"])
+    if league_id:
+        game_key = str(gm.game_id())
+        if game_key:
+            return gm.to_league(f"{game_key}.l.{league_id}")
+        log.warning("Couldn't read the current NBA game key; looking the league up instead.")
+    keys = _my_nba_league_keys(gm)
     if not keys:
         raise RuntimeError("The authenticated Yahoo user is not in any NBA leagues.")
-    keys = sorted(set(keys), key=lambda k: int(k.split(".")[0]), reverse=True)  # newest game first
     if league_id:
         matching = [k for k in keys if k.endswith(f".l.{league_id}")]
         if matching:
             return gm.to_league(matching[0])
-        log.warning("League id %s not found in current seasons; using newest league.", league_id)
     return gm.to_league(keys[0])
 
 

@@ -79,4 +79,18 @@ def connect() -> tuple[Source, str | None]:
         lg = discover_league(authenticate())
         return Source(YahooLeague(lg), None), None
     except Exception as exc:  # missing/expired credentials shouldn't take the site down
-        return Source(None, demo.make_league()), f"{type(exc).__name__}: {exc}"
+        return Source(None, demo.make_league()), _explain(exc)
+
+
+def _explain(exc: Exception) -> str:
+    """Turn Yahoo's raw error bytes into something a person can act on."""
+    raw = f"{type(exc).__name__}: {exc}"
+    text = str(exc)
+    if "not authorized" in text.lower() or "401" in text:
+        return ("Yahoo rejected the request as unauthorized. Check that the Yahoo app has "
+                "Fantasy Sports read access and that KEYPAIR_JSON holds a current refresh "
+                "token. Setting YAHOO_LEAGUE_ID skips the league lookup entirely. "
+                f"({raw[:300]})")
+    if isinstance(exc, FileNotFoundError):
+        return str(exc)
+    return raw[:500]

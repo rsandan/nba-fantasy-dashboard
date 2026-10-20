@@ -232,3 +232,73 @@ def test_hold_pairing(league):
     assert len(holds) == (tx["action"] == "add").sum()
     act = transactions.team_activity(tx, holds)
     assert act["stream_rate"].between(0, 1).all()
+
+
+# ------------------------------------------------------------ league discovery
+class _FakeHandler:
+    def __init__(self, responses):
+        self.responses, self.calls = responses, []
+
+    def get(self, uri):
+        self.calls.append(uri)
+        resp = self.responses.get(uri)
+        if isinstance(resp, Exception):
+            raise resp
+        if resp is None:
+            raise RuntimeError(b'{"error": {"description": "This application is not authorized"}}')
+        return resp
+
+
+class _FakeGame:
+    def __init__(self, handler, game_id="478"):
+        self.yhandler, self._gid = handler, game_id
+
+    def game_id(self):
+        return self._gid
+
+    def to_league(self, key):
+        return key
+
+
+def _discover(monkeypatch, handler, **env):
+    import sys
+    import types
+    from fantasy import yahoo_client as yc
+    for k in ("YAHOO_LEAGUE_KEY", "YAHOO_LEAGUE_ID"):
+        monkeypatch.delenv(k, raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+    fake = types.ModuleType("yahoo_fantasy_api")
+    fake.Game = lambda sc, code: _FakeGame(handler)
+    monkeypatch.setitem(sys.modules, "yahoo_fantasy_api", fake)
+    return yc.discover_league(object())
+
+
+LEAGUES_URI = "users;use_login=1/games;game_codes=nba/leagues"
+
+
+def test_discovery_uses_matrix_param_not_query_string(monkeypatch):
+    h = _FakeHandler({LEAGUES_URI: {"fantasy_content": {"users": {"0": {"user": [
+        {"guid": "x"}, {"games": {"0": {"game": [{"game_key": "466"}, {"leagues": {"0": {"league": [
+            {"league_key": "466.l.111"}]}}}]}, "1": {"game": [{"game_key": "478"}, {"leagues": {
+                "0": {"league": [{"league_key": "478.l.222"}]}}}]}}}]}}}}})
+    assert _discover(monkeypatch, h) == "478.l.222"         # newest season wins
+    assert h.calls == [LEAGUES_URI]
+    assert all("?use_login" not in c for c in h.calls)
+
+
+def test_discovery_falls_back_to_teams_endpoint(monkeypatch):
+    h = _FakeHandler({"users;use_login=1/games;game_codes=nba/teams": {"x": [
+        {"team_key": "478.l.222.t.3"}, {"team_key": "466.l.111.t.7"}]}})
+    assert _discover(monkeypatch, h) == "478.l.222"
+
+
+def test_league_id_skips_user_lookup(monkeypatch):
+    h = _FakeHandler({})                                      # every user endpoint would 401
+    assert _discover(monkeypatch, h, YAHOO_LEAGUE_ID="222") == "478.l.222"
+    assert h.calls == []
+
+
+def test_league_key_is_used_verbatim(monkeypatch):
+    h = _FakeHandler({})
+    assert _discover(monkeypatch, h, YAHOO_LEAGUE_KEY="478.l.999") == "478.l.999"

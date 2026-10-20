@@ -69,6 +69,7 @@ Each team-week is reduced to **per player-game rates** over 11 additive componen
 - The old player comparison averaged per-game FG% (so 1-for-1 counted the same as 10-for-25). All percentages now use total makes ÷ total attempts.
 - OAuth tokens refresh into a writable temp copy. Render mounts `/etc/secrets` read-only, so in-place refreshes failed once the one-hour token expired.
 - **Caching:** completed weeks are cached for the life of the process, the live week for 5 minutes, and NBA stats for 6 hours. Previously every page view re-fetched every week from Yahoo.
+- League discovery no longer calls `yahoo_fantasy_api`'s `Game.league_ids()`. In 2.12 it sends `use_login=1` as a query string instead of Yahoo's matrix parameter (`users;use_login=1`), so Yahoo treats it as "every user's leagues" and returns *"This application is not authorized to perform this action."* That's what knocked the site into demo mode on opening night 2026.
 - Renamed the entry point from `streamlit.py` to `app.py`. A script named `streamlit.py` shadows the `streamlit` package on import.
 - Removed the unused dependencies (`boto3`, `matplotlib`, `seaborn`).
 
@@ -89,7 +90,8 @@ fantasy/
   data_source.py           live vs. demo switch
   demo.py                  synthetic league generator (tests + demo mode)
 static/                    home-screen icon
-tests/                     34 tests: parsing, math, model skill/calibration, every tab renders
+tests/                     46 tests: parsing, math, model skill/calibration, league discovery,
+                           every tab renders (mid-season and opening night)
 ```
 
 ## Running it
@@ -97,7 +99,7 @@ tests/                     34 tests: parsing, math, model skill/calibration, eve
 ```bash
 pip install -r requirements-dev.txt
 FANTASY_DEMO=1 streamlit run app.py        # no credentials needed
-pytest -q                                  # 34 tests, ~15s
+pytest -q                                  # 46 tests, ~30s
 ```
 
 **Live mode** needs Yahoo OAuth credentials: create an app at developer.yahoo.com, complete the OAuth flow once locally with `yahoo_oauth`, and provide the resulting JSON (`consumer_key`, `consumer_secret`, `access_token`, `refresh_token`, `token_time`, `token_type`) via one of:
@@ -105,7 +107,7 @@ pytest -q                                  # 34 tests, ~15s
 - `KEYPAIR_JSON` or `YAHOO_OAUTH_JSON` environment variable (raw JSON), or
 - a secret file at `/etc/secrets/keypair.json` (Render) or `./keypair.json` (local, git-ignored).
 
-Optional: `YAHOO_LEAGUE_ID` (or `YAHOO_LEAGUE_KEY`) to pin a league. Otherwise the newest NBA league on the account is used. If Yahoo can't be reached, the site falls back to the demo league and says why instead of crashing.
+Recommended: set `YAHOO_LEAGUE_ID` to the number in your league's URL (`basketball.fantasysports.yahoo.com/nba/<id>`). The app pairs it with the current season's game key, so it rolls over each season without touching the user-leagues endpoint. `YAHOO_LEAGUE_KEY` (`478.l.12345`) pins an exact key. With neither set, the newest NBA league on the account is used. If Yahoo can't be reached, the site falls back to the demo league and says why instead of crashing.
 
 **Render:** `render.yaml` sets the start command to `streamlit run app.py --server.port $PORT --server.address 0.0.0.0`. If the service was created by hand, update the start command in the Render dashboard to match.
 
