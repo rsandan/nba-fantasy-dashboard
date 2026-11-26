@@ -27,3 +27,12 @@ def test_page_renders(page, team, monkeypatch):
         assert len(at.main.children) > 2, "page should render content"
     finally:
         script.unlink(missing_ok=True)
+
+
+def test_splash_variants_render_and_escape():
+    from fantasy import splash
+    for v in splash.VARIANTS:
+        out = splash.render("Season 4 of Love Island (NBA)", v)
+        assert 'class="spl"' in out and "Island" in out and "(NBA)" in out and "<script" not in out
+    assert "&lt;b&gt;" in splash.render("<b>x</b> of y", "bounce")
+    assert splash.render("Season 4 of Love Island (NBA)", "swish").count('class="word"') == 6

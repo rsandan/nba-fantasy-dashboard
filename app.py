@@ -19,7 +19,7 @@ import streamlit as st
 from fantasy import matchup_model as mm
 import altair as alt
 
-from fantasy import hub, insights, leaders, nba_data, power, trade
+from fantasy import hub, insights, leaders, nba_data, power, splash, trade
 from fantasy import ui
 from fantasy.categories import BY_NAME, CATEGORIES, CATEGORY_NAMES, category_value, compare
 from fantasy.data_source import connect
@@ -31,8 +31,23 @@ st.set_page_config(page_title="Love Island", page_icon="🏀", layout="centered"
 ET = "America/New_York"
 
 
+@st.cache_resource(show_spinner=False)
+def _splash_title() -> dict:
+    """League name remembered across visits so the loading screen can show it before
+    Yahoo answers. The very first boot after a deploy uses the fallback."""
+    return {"title": "Love Island (NBA)"}
+
+
+# Loading screen: first load of each visit only, random variant, cleared after the page renders.
+_SPLASH = None
+if not st.session_state.get("_splashed"):
+    st.session_state["_splashed"] = True
+    _SPLASH = st.empty()
+    _SPLASH.html(splash.render(_splash_title()["title"]))
+
+
 # ============================================================================ data
-@st.cache_resource(show_spinner="Connecting to Yahoo…")
+@st.cache_resource(show_spinner=False)          # the loading screen covers this
 def get_source():
     return connect()
 
@@ -46,6 +61,7 @@ def load_meta(_tag: str):
 
 
 META = load_meta("demo" if SOURCE.is_demo else "live")
+_splash_title()["title"] = META.name
 KEY = META.league_key
 
 
@@ -905,4 +921,8 @@ active = next((i for i, p in enumerate(PAGES) if p.title == nav.title), 0)
 st.html(f"<style>.st-key-tab_{active} a[data-testid='stPageLink-NavLink']"
         "{color:var(--blue) !important}</style>")
 
-nav.run()
+try:
+    nav.run()
+finally:
+    if _SPLASH is not None:
+        _SPLASH.empty()
