@@ -2,177 +2,261 @@
 ![Header Image](./cover.jpg)
 [Click here to check it out](https://nba-fantasy-dashboard.onrender.com/)
 
-⚠️ Hosted on Render's free tier, so the app spins down when idle. If nobody has visited in a while, the first load takes ~50 seconds. Give it a minute and refresh.
+A phone-first companion app for my friends' Yahoo Fantasy Basketball league, **Season 4 of
+Love Island (NBA)**: H2H, 8 teams, 9 categories (FG%, FT%, 3PT%, PTS, REB, AST, STL, BLK, TO).
+
+It answers the questions we actually ask each other in the group chat: *Am I winning this
+week? What should I do about it? Who should I trade with? Who's sleeping on the wire?* Every
+number comes from the same simulation model, so a headline never contradicts the odds below it.
+
+> Hosted on Render's free tier. A keep-alive ping keeps it awake, but if it was asleep the first
+> load takes up to a minute.
 
 ---
 
-## What this is
-
-A Streamlit site for my friends' Yahoo Fantasy Basketball league (**Love Island (NBA)**, H2H, 10 teams, 9 categories: FG%, FT%, 3PTM, PTS, REB, AST, STL, BLK, TO).
-
-Season 1 was a scoreboard. Season 3 is a phone app: almost everyone opens it from an iPhone,
-so it's built like one.
+## The app
 
 | Tab | What it answers |
 |---|---|
-| **This Week** | How's my matchup going? Win probability up top, then all nine categories with who's leading, the projection, and your chance to win each one. Other matchups tap open below. |
-| **Standings** | Record, all-play and schedule luck · **Power** (schedule-neutral strength, strong/weak categories) · **Playoffs** (odds with the playoff line drawn in). |
-| **Players** | **Pickups**: who to add today, weighted toward the categories still in play in your matchup · **Rankings**: searchable 9-cat values with punt and stat-window filters. |
-| **Trade** | Pick what you send and what you get. One verdict, both sides' view, and a per-category breakdown. |
+| **Home** | Your **game plan**: the top 3 moves for this week, each scored by how much it changes your odds (e.g. *Add X, drop Y: 17% → 26%*). A top story, a headline for every matchup (coin flip, upset watch, comeback, blowout), and the **Wire report**: one good and one bad thing about every team. A lineup alert appears when something needs fixing today. |
+| **This Week** | Live win probability, all nine categories with banked totals, projections and odds (bars grow toward whoever is favored), your game plan, **Lineup check**, **Strengths & weaknesses**, and a scout card for your opponent. |
+| **Standings** | **Standings** (record, all-play, schedule luck) · **Power** (schedule-neutral strength) · **Leaders**: a teams × categories rank grid, a leaderboard per category with movement arrows, and week-by-week trend charts to compare any 4 teams against the league average. |
+| **Players** | **Pickups** weighted toward the categories still in play in your matchup (injured players excluded, game-time decisions flagged) · **Rankings** with punt and stat-window filters. |
+| **Trade** | **Trade Hub**: best partners by how well your needs interlock, and suggested 1-for-1 / 2-for-1 deals that are fair on overall value *and* help both teams. One tap loads a suggestion into the **builder**, which grades any trade and calls out overpays. |
 
-### Mobile design
+### Built like a phone app
 
-- **Bottom tab bar**, thumb-reachable, instead of a hidden sidebar menu.
-- **Your team, remembered.** Pick it once and it's saved in the link (`?team=3`). Add the page to your
-  home screen and it opens straight to your matchup, full screen, with its own icon.
-- **Lists, not spreadsheets.** Every table became an inset grouped list. Nothing scrolls sideways.
-- **Follows the phone's light/dark setting**, using iOS system colors.
-- **No keyboard unless you're searching.** Teams and categories are tap targets (radio lists, pills,
-  segmented controls). Every row is at least 44pt tall, inputs are 16px so Safari doesn't zoom.
-- **Color is never the only signal.** Every +/− has a sign and every probability has a number.
+- Floating frosted tab bar, iOS system colors, follows the phone's light/dark setting.
+- **Your team, remembered** in the link (`?team=3`). Add it to your home screen and it opens
+  straight to your stuff.
+- Team profile pictures from Yahoo; full team names wrap instead of truncating.
+- Lists, not spreadsheets. Nothing scrolls sideways; every tap target is at least 44pt.
+- An animated loading screen (bounce, scoreboard, or swish, picked at random) on the first load
+  of each visit. Pure CSS, so it costs nothing to load.
+- Color is never the only signal: every +/− has a sign and every probability has a number.
 
-Cut for mobile: the matchup lab and its backtest charts, the free-agency analytics page, and player
-comparison. The analytics behind them still live in `fantasy/` and are still covered by the tests.
+Everything runs without credentials in **demo mode** on a synthetic league:
+`FANTASY_DEMO=1 streamlit run app.py`.
 
-Everything runs without credentials in **demo mode** on a synthetic league: `FANTASY_DEMO=1 streamlit run app.py`.
+---
 
-## Modeling notes
+## How it works
 
-### 1. The matchup model (`fantasy/matchup_model.py`)
-Each team-week is reduced to **per player-game rates** over 11 additive components (FGA, FG%, FTA, FT%, 3PTM, PTS, REB, AST, STL, BLK, TO). Working per game instead of per week separates roster quality from schedule volume, since Yahoo tells us each team's games remaining in advance.
+### 1. Matchup model (`fantasy/matchup_model.py`)
 
-- **Team means:** a recency-weighted average (6-week half-life) shrunk toward a prior worth 3 weeks of data. The prior is the team's **current roster projection** (rescaled to the league's observed per-started-game level), so week-1 predictions and post-trade teams are sensible.
-- **Noise:** week-to-week residuals are pooled across the league into an 11×11 covariance, rescaled by games played, and regularized (30% shrinkage of off-diagonals). Categories are correlated: a high-volume week lifts PTS, 3PTM, FGA *and* TO together. Treating them as independent overstates sweeps.
-- **Parameter uncertainty:** simulations add the posterior variance of each team's mean (`1 / (weeks of evidence + prior weeks)`), so early-season probabilities aren't overconfident. For season simulations that uncertainty is drawn once per simulated season, because a team's true strength doesn't re-roll every week.
-- **Percentages are simulated correctly:** draw attempts and make rate, compute makes, then divide. Totals are rounded to integers and percentages to Yahoo's 3-decimal display precision, so category ties happen at realistic rates (they're common in BLK and STL).
+Each team-week is reduced to **per player-game rates** over 12 components (FGA, FG%, FTA, FT%,
+3PA, 3P%, PTS, REB, AST, STL, BLK, TO). Working per game separates roster quality from schedule
+volume, since Yahoo reports each team's games remaining.
 
-**Backtest (`mm.backtest`, run in the test suite):** walk-forward. For every completed week *w*, fit on weeks before *w* only and predict every category of every matchup before tipoff. It reports Brier score, log loss, Brier skill score vs a coin flip, an empirical "compare past weeks directly" baseline, and a reliability curve. On the synthetic league the model scores a category Brier skill score of roughly 0.28 versus about 0.09 for the empirical baseline, and the calibration curve tracks the diagonal.
+- **Team strength:** a recency-weighted average (6-week half-life) shrunk toward a prior worth 3
+  weeks of data. The prior is the team's **current roster projection**, so week 1 and post-trade
+  teams are sensible.
+- **Randomness is learned, not assumed:** week-to-week swings are pooled across the league into a
+  covariance matrix, scaled by games remaining, with correlations kept (a high-volume week lifts
+  PTS, threes, FGA *and* turnovers together).
+- **Parameter uncertainty** is added on top and shrinks as the season goes on.
+- **Percentages are simulated from makes and attempts**, then rounded the way Yahoo displays
+  them, so category ties happen at realistic rates.
+- Each matchup is played out **4,000 times** from what's already banked.
 
-### 2. Player valuation (`fantasy/valuation.py`)
-- **Replacement-aware pool:** z-scores are measured against the top `teams × roster spots` players, chosen iteratively, not against all ~550 NBA players (that inflates everyone).
-- **Percentages use impact:** `(player% − pool%) × attempts`. A 60% shooter on 3 FGA barely moves a weekly FG%; a 52% shooter on 20 FGA moves it a lot.
-- **Punting** removes a category from the total *and* from pool selection.
-- **Early-season shrinkage:** each player's current line is blended with last season using `w = GP / (GP + 15)`, so a hot five-game start doesn't top the board. Before opening night this makes the page a draft board built on last season.
-- **Availability-adjusted value** discounts players who miss games.
+A walk-forward backtest (`mm.backtest`, in the test suite) predicts every category of every past
+matchup using only earlier weeks and reports Brier skill and a reliability curve.
 
-### 3. League analytics (`fantasy/power.py`, `fantasy/transactions.py`)
-- **All-play:** every week, every team is scored against *all* opponents. The gap between actual and all-play win% is **schedule luck**.
-- **Playoff odds:** 2,000 simulated seasons using the real remaining schedule and the league's scoring format (`head` = every category counts in the standings, `headone` = one result per matchup).
-- **Trades:** category deltas are weighted by `0.25 + 0.75 × 4p(1−p)`, where *p* is the team's all-play win rate in that category. Swing categories matter most; locked or punted ones barely count. Uneven trades are priced at replacement level for the roster spot opened or lost. The analyzer shows both sides' view, so you can find deals that help both teams.
-- **Wire activity:** each add is paired with the same team's next drop of that player. Hold time is censored for players still rostered, so medians aren't biased short.
+### 2. Player values (`fantasy/valuation.py`)
 
-## Fixes to the season-1 code
+- z-scores against a **replacement-aware pool** (`teams × roster spots`), not all ~550 players.
+- Percentages use **impact**: `(player% − pool%) × attempts`.
+- Early season blends this season with last: `w = GP / (GP + 15)`.
+- Punting removes a category from both the total and pool selection.
 
-- Removed the hard-coded league key and `team_ids` dict. The league and team names are discovered at runtime, so the app survives Yahoo's new league key every season.
-- Removed the hard-coded `season="2024-25"` and `"Week 22"`.
-- The scoreboard parser now keeps `FGM/A` and `FTM/A`. The old one dropped them, which made correct percentage aggregation impossible.
-- The old player comparison averaged per-game FG% (so 1-for-1 counted the same as 10-for-25). All percentages now use total makes ÷ total attempts.
-- OAuth tokens refresh into a writable temp copy. Render mounts `/etc/secrets` read-only, so in-place refreshes failed once the one-hour token expired.
-- **Caching:** completed weeks are cached for the life of the process, the live week for 5 minutes, and NBA stats for 6 hours. Previously every page view re-fetched every week from Yahoo.
-- League discovery no longer calls `yahoo_fantasy_api`'s `Game.league_ids()`. In 2.12 it sends `use_login=1` as a query string instead of Yahoo's matrix parameter (`users;use_login=1`), so Yahoo treats it as "every user's leagues" and returns *"This application is not authorized to perform this action."* That's what knocked the site into demo mode on opening night 2026.
-- Renamed the entry point from `streamlit.py` to `app.py`. A script named `streamlit.py` shadows the `streamlit` package on import.
-- Removed the unused dependencies (`boto3`, `matplotlib`, `seaborn`).
+### 3. Game plan and storylines (`fantasy/insights.py`)
 
-## Project layout
+- **Add/drop moves are re-simulated:** the pickup's expected stats over his remaining games are
+  added and the dropped player's removed, using the same random seed, so the difference in odds
+  is the move and not noise. Players Yahoo lists as out/injured/IL are never recommended; your own
+  injured players count as zero games, which surfaces them as drops (top-60 players never are).
+- Also ranked: the most winnable category you trail (with the per-game gap), a lead to protect,
+  games-left edges, and lost causes not worth chasing.
+- **Headlines** come from templates keyed to the simulation (blowout, in control, tight, coin
+  flip, upset watch by standings rank, comeback when trailing but favored), tied to transactions
+  when a team just added help in the deciding category.
+- **Wire report:** for each team, the strongest positive and negative signal from trades (won or
+  lost by per-game value), pickups now ranked highly, scooped drops, regretted cuts, streaks, this
+  week's odds, injured players hogging spots, and inactivity, falling back to its best and worst
+  category.
 
-```
-app.py                     Streamlit app: 4 tabs, caching layer, "my team" state
-fantasy/
-  categories.py            9-cat definitions, tie/NaN-aware category comparison
-  yahoo_client.py          OAuth, league discovery, pure JSON parsers (scoreboard, transactions)
-  nba_data.py              nba_api per-game stats, schedule, season blending, name matching
-  matchup_model.py         team-strength model, Monte Carlo simulator, walk-forward backtest
-  power.py                 all-play, luck, power ratings, playoff odds
-  valuation.py             replacement-aware z-scores, punts
-  trade.py                 trade evaluation, context weights, streaming board
-  transactions.py          add/drop pairing, activity, timing
-  ui.py                    iOS-style components (lists, scoreboard, tab bar), light/dark CSS
-  data_source.py           live vs. demo switch
-  demo.py                  synthetic league generator (tests + demo mode)
-static/                    home-screen icon
-tests/                     46 tests: parsing, math, model skill/calibration, league discovery,
-                           every tab renders (mid-season and opening night)
-```
+### 4. Trades, profiles and lineups (`fantasy/hub.py`, `fantasy/trade.py`)
 
-## Home: game plans and storylines
+- **Fair first:** a suggested trade must be within **15%** on overall value (standard 9-cat value
+  above replacement, second player in a package at 60% because starting spots are limited). This
+  is what stops "two stars for a role player" suggestions.
+- **Then both sides must gain** on their own needs. Categories are weighted by how contested they
+  are for that team (`0.5 + 0.5 × 4p(1−p)`), so needs tilt value without erasing a star.
+- Ideas are ranked by the **smaller** of the two gains: the most balanced win-win first. Cards and
+  the builder share one scoring function, so their numbers always match.
+- **Partner fit** is how negatively two teams' category profiles correlate (they're strong where
+  you're weak, and vice versa).
+- **Strengths & weaknesses** shows two ranks per category: past results (all-play category win
+  rate) and current roster (summed per-game z). They can disagree right after a trade, so both
+  are shown rather than blended.
+- **Lineup check** compares today's lineup slots with today's NBA schedule: injured starters,
+  starters with no game while an eligible bench player has one, and IL candidates.
 
-`fantasy/insights.py` powers the Home tab (the new landing page):
+### 5. Leaders (`fantasy/leaders.py`)
 
-* **Your game plan**: the top 3 moves for your live matchup. Add/drop pairs are scored by
-  re-running the matchup simulation with the pickup's expected stats over his remaining
-  games added and the dropped player's removed (same seed), so each shows its effect on
-  your odds (e.g. 19% → 26%). Also: the most winnable category you trail (with the
-  per-game gap), a lead worth protecting, injured players in active slots, games-left
-  edges, and lost causes not worth chasing. The same card appears on This Week.
-* **Storylines**: a headline for every matchup (coin flip, upset watch, comeback,
-  blowout), tied to transactions when a team just added help in the swing category, plus
-  a wire report from the transaction log (trades and who won them, scooped drops,
-  steals, regrets, grinders, quiet managers) and win/loss streaks.
+This week's live totals or the season's average week; percentages from summed makes ÷ attempts
+(as Yahoo scores them); turnovers rank fewest-first and their chart axis is flipped so up always
+means better. Trend charts use completed weeks only, so a half-finished week doesn't read as a slump.
 
-## Trade Hub, team profiles and lineup check (`fantasy/hub.py`)
+### 6. League analytics (`fantasy/power.py`, `fantasy/transactions.py`)
 
-* **Strengths & weaknesses** (This Week): your league rank in each category from past
-  results and from the current roster, with a punt-or-invest note. Scout your opponent's
-  card from the same page.
-* **Trade Hub** (Trade): best partners by how well your needs interlock, and suggested
-  1-for-1 / 2-for-1 deals where *both* teams gain on their own category needs. One tap loads
-  a suggestion into the trade builder. Cards and builder share one score
-  (`trade.package_value`: value above replacement, second player in a package at 60%).
-* **Lineup check** (This Week, and Home when something needs fixing): injured players in
-  active slots, starters with no game today while an eligible bench player has one, and
-  injured bench players who belong on IL.
+All-play records and **schedule luck**, schedule-neutral power ratings, and add/drop pairing for
+the transaction log.
 
-## How NBA stats load (and why pages are fast)
+---
 
-stats.nba.com blocks or throttles most cloud hosts, including Render, so the app never
-calls it during a page load. Instead:
+## Data pipeline
 
-1. `.github/workflows/refresh-data.yml` runs `scripts/refresh_data.py` every 3 hours.
-   It tries stats.nba.com first and falls back to cdn.nba.com box scores (static JSON,
-   not rate limited), then commits small CSVs to the **`data` branch**.
-2. The app reads those CSVs from raw.githubusercontent.com in about a second
-   (`fantasy/snapshot.py`), with a local `data/` folder as a fallback.
-3. Commits go to `data`, not `main`, so refreshes never trigger a Render redeploy.
-4. `.github/workflows/keep-alive.yml` pings the site every 10 minutes so Render's free
-   plan doesn't put it to sleep.
+### Yahoo (live league data)
 
-To rebuild by hand: **Actions -> refresh-nba-data -> Run workflow**. Locally:
-`python scripts/refresh_data.py --out data`. Set `NBA_LIVE_FALLBACK=1` to let the app
-call stats.nba.com directly when no snapshot exists (only useful on a home connection).
+One OAuth token on the server; every visitor reads from shared caches, so Yahoo traffic depends
+on cache refreshes, not on how many people are looking (roughly 100–200 calls/hour at most).
+
+| Data | Refresh |
+|---|---|
+| Completed weeks | cached for the life of the process |
+| Live week | 5 min |
+| Rosters and lineups | 10 min |
+| Transactions | 15 min |
+| Free agents | 30 min |
+
+Access tokens last an hour and refresh automatically into a writable temp copy (Render mounts
+`/etc/secrets` read-only). The refresh token is long-lived; it stops working only if the Yahoo
+password changes, the app's access is revoked, or Yahoo disables the app.
+
+### NBA stats (snapshots, never live)
+
+NBA blocks cloud servers: stats.nba.com times out and cdn.nba.com returns 403 from both Render and
+GitHub Actions. So a page load never calls NBA:
+
+1. `.github/workflows/refresh-data.yml` runs `scripts/refresh_data.py` **every 3 hours**.
+2. Per-game stats come from **Basketball-Reference** (one page per season); NBA person ids are
+   attached offline from the player list bundled with `nba_api`, which keeps headshots working.
+   The schedule comes from **ESPN's public scoreboard**. stats.nba.com is still tried first.
+3. "Last 2 weeks" and "Last 30 days" are computed from daily season-total snapshots.
+4. CSVs are committed to the **`data` branch** (not `main`, so no Render redeploy) and read from
+   raw.githubusercontent.com in about a second (`fantasy/snapshot.py`).
+5. `.github/workflows/keep-alive.yml` pings the site every 10 minutes.
+
+To rebuild by hand: **Actions → refresh-nba-data → Run workflow**, or locally
+`python scripts/refresh_data.py --out data`.
+
+---
 
 ## Running it
 
 ```bash
 pip install -r requirements-dev.txt
 FANTASY_DEMO=1 streamlit run app.py        # no credentials needed
-pytest -q                                  # 46 tests, ~30s
+pytest -q                                  # 72 tests, ~25s
 ```
 
-**Live mode** needs Yahoo OAuth credentials: create an app at developer.yahoo.com, complete the OAuth flow once locally with `yahoo_oauth`, and provide the resulting JSON (`consumer_key`, `consumer_secret`, `access_token`, `refresh_token`, `token_time`, `token_type`) via one of:
+### Live mode (Yahoo)
 
-- `KEYPAIR_JSON` or `YAHOO_OAUTH_JSON` environment variable (raw JSON), or
-- a secret file at `/etc/secrets/keypair.json` (Render) or `./keypair.json` (local, git-ignored).
+1. Create an app at developer.yahoo.com with **Fantasy Sports** permission (Yahoo now approves
+   access per app; an app created before approval won't work, so create a new one).
+2. Get an authorization code: open
+   `https://api.login.yahoo.com/oauth2/request_auth?client_id=<CLIENT_ID>&redirect_uri=<REDIRECT_URI>&response_type=code`,
+   **signed in as the Yahoo account that's in the league**, and copy `code=` from the redirect.
+3. Exchange it at `https://api.login.yahoo.com/oauth2/get_token` and save the JSON
+   (`consumer_key`, `consumer_secret`, `access_token`, `refresh_token`, `token_time`, `token_type`).
+4. Provide it via a Render **secret file** `keypair.json` (also read: `oauth2.json`, or the
+   `KEYPAIR_JSON` / `YAHOO_OAUTH_JSON` env vars).
 
-Recommended: set `YAHOO_LEAGUE_ID` to the number in your league's URL (`basketball.fantasysports.yahoo.com/nba/<id>`). The app pairs it with the current season's game key, so it rolls over each season without touching the user-leagues endpoint. `YAHOO_LEAGUE_KEY` (`478.l.12345`) pins an exact key. With neither set, the newest NBA league on the account is used. If Yahoo can't be reached, the site falls back to the demo league and says why instead of crashing.
+Optional: `YAHOO_LEAGUE_ID` (the number in your league URL) pins the league and rolls over each
+season; `YAHOO_LEAGUE_KEY` (`478.l.12345`) pins an exact key. If Yahoo can't be reached, the site
+falls back to the demo league and says why.
 
-**Render:** `render.yaml` sets the start command to `streamlit run app.py --server.port $PORT --server.address 0.0.0.0`. If the service was created by hand, update the start command in the Render dashboard to match.
+**Render:** `render.yaml` starts `streamlit run app.py --server.port $PORT --server.address 0.0.0.0`
+and auto-deploys on pushes to `main`.
+
+### Troubleshooting
+
+| Symptom | Cause |
+|---|---|
+| `KeyError: 'access_token'` | The secret file has keys but no token. Run steps 2–4. |
+| `ELAPSED TIME` in the logs is huge | The app is reading an old token file. Check every secret file. |
+| "You are not allowed to view this page because you are not in this league" | The token belongs to a different Yahoo account than the one in the league. Re-authorize signed in as the right one. |
+| Player stats empty | The `data` branch hasn't been built yet: run the refresh workflow. |
+
+---
+
+## Project layout
+
+```
+app.py                     Streamlit app: 5 tabs, caching layer, "my team" state, loading screen
+fantasy/
+  categories.py            9-cat definitions (3PT% from makes/attempts), tie-aware comparison
+  yahoo_client.py          OAuth, league discovery, pure JSON parsers (scoreboard, transactions)
+  data_source.py           live vs. demo switch; reads NBA data from snapshots
+  snapshot.py              snapshot reader + Basketball-Reference / ESPN / NBA CDN parsers
+  nba_data.py              per-game stats, schedule, season blending, name matching
+  matchup_model.py         team-strength model, Monte Carlo simulator, walk-forward backtest
+  insights.py              game plans, matchup headlines, wire report
+  hub.py                   trade partners and fair trade search, team profiles, lineup check
+  leaders.py               category leaderboards and trends
+  valuation.py             replacement-aware z-scores, punts
+  trade.py                 trade evaluation, shared package scoring, streaming board, injury status
+  power.py                 all-play, luck, power ratings
+  transactions.py          add/drop pairing, activity
+  ui.py                    iOS-style components and light/dark CSS
+  splash.py                animated loading screen (3 variants)
+  demo.py                  synthetic league generator (tests + demo mode)
+scripts/refresh_data.py    builds the NBA snapshots on the data branch
+.github/workflows/         tests, 3-hourly data refresh, keep-alive ping
+tests/                     72 tests: parsers, model skill and calibration, valuation, fair trades,
+                           lineup checks, leaderboards, storylines, every tab renders
+```
+
+---
+
+## Changelog
+
+### Season 4 (2026–27)
+- **Yahoo access:** moved to a new Fantasy-approved Yahoo app; documented the token flow and the
+  wrong-account pitfall.
+- **Fast loads:** NBA stats moved off the request path into 3-hourly snapshots; "Loading player
+  stats" used to hang for minutes on blocked stats.nba.com calls, then crash on empty data.
+- **Scoring fix:** the league scores **3PT%**, not 3PTM. The old assumption blanked every
+  counting-stat projection and inflated tie odds (61% on one matchup).
+- **New:** Home tab (game plan, headlines, wire report), Trade Hub with fair suggestions, Lineup
+  check, Strengths & weaknesses, Leaders (replacing Playoffs), team logos, loading screen.
+- **Accuracy:** injured players excluded from pickups; trade suggestions must be fair on overall
+  value; storylines state both teams' games remaining instead of the difference.
+- **Design:** floating tab bar, bolder type, diverging category bars, two-color win bars.
+
+### Season 3
+- Rebuilt as a phone app: bottom tab bar, grouped lists, remembered team, light/dark.
+- Matchup model, replacement-aware valuation, all-play and schedule luck, trade analyzer.
+- Fixed percentage math (makes ÷ attempts instead of averaging game percentages), removed the
+  hard-coded league key and season, cached Yahoo calls, renamed `streamlit.py` to `app.py` (it
+  shadowed the `streamlit` package), and worked around `yahoo_fantasy_api`'s `league_ids()` bug.
 
 ## Known limitations
 
-- Per-game rates assume Yahoo's `completed_games` counts started player-games. Daily lineup decisions (benching, IL moves) aren't modeled beyond that.
-- The backtest plugs in the games each team actually got. The schedule is known ahead of time, but late injuries aren't, so treat backtest skill as a slight upper bound.
-- Yahoo's playoff tiebreakers aren't exposed in the API, so exact ties in the playoff simulation are broken at random.
-- stats.nba.com rate-limits cloud IPs. Calls retry with backoff, and pages degrade gracefully if it's down.
-
-## Season-1 notes (OAuth + deployment lessons)
+- Per-game rates assume Yahoo's completed games count started player-games; daily lineup choices
+  aren't modeled beyond that.
+- Trade values and pickups use per-game production; minutes or role changes show up only as the
+  new games accumulate.
+- If Yahoo has an outage, some pages show an error instead of the last good data.
+- Player photos come straight from NBA's servers; players without a matched NBA id show initials.
 
 <details>
-<summary>What I learned getting the first version live</summary>
+<summary>Season-1 notes (OAuth + deployment lessons)</summary>
 
-- Yahoo's API uses OAuth2. Tokens expire after an hour, so refresh them automatically (`sc.token_is_valid()` / `sc.refresh_access_token()`).
+- Yahoo's API uses OAuth2. Tokens expire after an hour, so refresh them automatically.
 - `redirect_uri=oob` is deprecated. Set a real redirect URI in the Yahoo developer settings.
 - Keep secrets out of Git (`.gitignore`, environment variables, Render secret files).
-- ngrok is handy for local demos, but Render already provides a public URL.
 - Render logs are the fastest way to debug deploys.
 - [Yahoo Fantasy API docs](https://yahoo-fantasy-api.readthedocs.io/en/latest/yahoo_fantasy_api.html) · [Render docs](https://render.com/docs)
 </details>
