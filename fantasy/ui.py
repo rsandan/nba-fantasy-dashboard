@@ -254,6 +254,10 @@ button[kind], [data-testid="stPopover"] button { min-height:44px; }
 .idea .nums span { font-size:12px; font-weight:800; padding:4px 8px; border-radius:8px; font-variant-numeric:tabular-nums;
   color:var(--green); background:color-mix(in srgb, var(--green) 14%, transparent); }
 .idea .nums span.them { color:var(--blue); background:color-mix(in srgb, var(--blue) 14%, transparent); }
+.idea .nums { flex-wrap:wrap; }
+.idea .nums span.fair { color:var(--label2); background:var(--fill2); }
+.mv { font-size:14px; color:var(--label2); margin-top:12px; padding-top:10px; border-top:.5px solid var(--sep); line-height:19px; }
+.mv b { color:var(--label); font-weight:700; }
 .idea .pt { font-size:14px; line-height:19px; color:var(--label2); margin-top:10px; }
 
 /* ---------- lineup check ---------- */
@@ -484,13 +488,14 @@ def _ordinal(n: int) -> str:
     return "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
 
 
-def idea_card(idea, partner_name: str, logo_html: str) -> str:
+def idea_card(idea, partner_name: str, logo_html: str, fair_label: str = "Fair trade") -> str:
     give = "<br>".join(e(n) for n in idea.give_names)
     get = "<br>".join(e(n) for n in idea.get_names)
     return (f'<div class="idea"><div class="hd">{logo_html}<div class="nm">with {e(partner_name)}</div></div>'
             f'<div class="sw"><div><div class="k">You send</div><div class="p">{give}</div></div>'
             f'<div class="ar">⇄</div><div class="rt"><div class="k">You get</div><div class="p">{get}</div></div></div>'
-            f'<div class="nums"><span>You {signed(idea.mine)}</span><span class="them">Them {signed(idea.theirs)}</span></div>'
+            f'<div class="nums"><span class="fair">{e(fair_label)} · {idea.give_mv:.1f} ⇄ {idea.get_mv:.1f}</span>'
+            f'<span>You {signed(idea.mine)}</span><span class="them">Them {signed(idea.theirs)}</span></div>'
             f'<div class="pt">{e(idea.pitch)}</div></div>')
 
 

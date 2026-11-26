@@ -699,12 +699,13 @@ def _trade_hub(c: dict, me: str, ros: pd.DataFrame, res):
         return
     ui.section("Suggested trades")
     for i, idea in enumerate(ideas):
-        st.html(ui.idea_card(idea, NAMES.get(idea.partner, ""), logo(idea.partner)))
+        st.html(ui.idea_card(idea, NAMES.get(idea.partner, ""), logo(idea.partner),
+                             hub.fairness(idea.give_mv, idea.get_mv)[1]))
         st.button("Open in trade builder", key=f"load_trade_{i}", icon=":material/swap_horiz:",
                   type="tertiary", on_click=_load_trade, args=(idea.partner, idea.give, idea.get))
-    ui.footnote("Searched every 1-for-1 and 2-for-1 with each team and kept deals where both sides gain, "
-                "each judged on its own category needs. The second player in a 2-for-1 counts 60%, "
-                "because starting spots are limited.")
+    ui.footnote("Every 1-for-1 and 2-for-1 with each team, kept only if both sides are within 15% on overall "
+                "value (the numbers in gray) and both teams improve on their own category needs. The second "
+                "player in a package counts 60%, because starting spots are limited.")
 
 
 def page_trade():
@@ -745,14 +746,23 @@ def page_trade():
         return
 
     rates = ap["category_rates"]
-    w_me = trade.context_weights(rates.loc[me] if me in rates.index else None, punts)
-    w_them = trade.context_weights(rates.loc[them] if them in rates.index else None)
+    w_me = trade.context_weights(rates.loc[me] if me in rates.index else None, punts, floor=hub.NEED_FLOOR)
+    w_them = trade.context_weights(rates.loc[them] if them in rates.index else None, floor=hub.NEED_FLOOR)
     mine = trade.evaluate_trade(res.table, give, get, res.replacement, w_me)
     theirs = trade.evaluate_trade(res.table, get, give, res.replacement, w_them)
     head, _, body = mine.verdict.partition(":")
-    both = mine.weighted_delta > 0 and theirs.weighted_delta > 0
-    if both:
-        body += ". They come out ahead too, so it should be an easy sell."
+    give_mv = hub.market_value(res.table, give, res.replacement)
+    get_mv = hub.market_value(res.table, get, res.replacement)
+    gap, fair_label = hub.fairness(give_mv, get_mv)
+    if gap < -hub.FAIR_GAP:
+        if mine.weighted_delta > 0:
+            head = "Ask for more"
+        body = (f" It fits your categories, but you're giving up {abs(gap):.0%} more overall value. "
+                "Ask them to add something." if mine.weighted_delta > 0 else body)
+    elif gap > 2 * hub.FAIR_GAP:
+        body += f". It's lopsided in your favor by {gap:.0%} of overall value, so expect a no."
+    elif mine.weighted_delta > 0 and theirs.weighted_delta > 0:
+        body += ". Fair on overall value and they come out ahead too, so it should be an easy sell."
     st.html(
         '<div class="verdict">'
         f'<div class="h">{e(head)}</div><div class="b">{e(body.strip()[:1].upper() + body.strip()[1:])}</div>'
@@ -761,7 +771,9 @@ def page_trade():
         f'{signed(mine.weighted_delta)}</div></div>'
         f'<div class="n"><div class="k">{e(NAMES[them])}</div><div class="v {ui.sign_class(theirs.weighted_delta)}">'
         f'{signed(theirs.weighted_delta)}</div></div>'
-        "</div></div>")
+        "</div>"
+        f'<div class="mv">Overall value: you send <b>{give_mv:.1f}</b>, you get <b>{get_mv:.1f}</b> · '
+        f'{e(fair_label)}</div></div>')
     ui.section("What changes for you, by category")
     chips = []
     for cat in CATEGORY_NAMES:

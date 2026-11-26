@@ -68,3 +68,22 @@ def test_lineup_check_flags_injured_starter_and_idle_slot():
 def test_lineup_check_without_slot_data_is_silent():
     issues, ok = hub.lineup_check("t1", pd.DataFrame([dict(team_key="t1", name="A")]), {"BOS"})
     assert issues == [] and ok is False
+
+
+def test_suggested_trades_are_fair_on_overall_value(ctx):
+    for me in ctx["names"]:
+        partners = hub.trade_partners(me, list(ctx["names"]), ctx["rates"], ctx["rz"])
+        for i in hub.suggest_trades(me, ctx["ros"], ctx["vals"].table, ctx["vals"].replacement,
+                                    ctx["rates"], partners, ctx["names"]):
+            g = hub.market_value(ctx["vals"].table, i.give, ctx["vals"].replacement)
+            t = hub.market_value(ctx["vals"].table, i.get, ctx["vals"].replacement)
+            assert abs(t - g) / max(t, g) <= hub.FAIR_GAP + 1e-9
+
+
+def test_two_stars_for_a_role_player_is_flagged_as_overpay(ctx):
+    vals = ctx["vals"].table
+    stars = vals.nsmallest(2, "rank")["PLAYER_ID"].tolist()
+    role = vals[vals["rank"] == 120]["PLAYER_ID"].tolist()
+    g = hub.market_value(vals, stars, ctx["vals"].replacement)
+    t = hub.market_value(vals, role, ctx["vals"].replacement)
+    assert hub.fairness(g, t)[1] == "You overpay"

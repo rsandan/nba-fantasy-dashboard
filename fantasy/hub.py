@@ -114,6 +114,8 @@ class TradeIdea:
     mine: float = 0.0
     theirs: float = 0.0
     pitch: str = ""
+    give_mv: float = 0.0       # overall (market) value of each side
+    get_mv: float = 0.0
 
 
 def _profile_vec(team, cat_rates, rz) -> pd.Series:
@@ -145,10 +147,43 @@ def trade_partners(me: str, teams: list, cat_rates: pd.DataFrame, rz: pd.DataFra
     return sorted(out, key=lambda p: -p.fit)
 
 
+def market_value(values: pd.DataFrame, ids: list, replacement: pd.Series) -> float:
+    """What a package is worth to an average team: standard 9-cat value above replacement,
+    best player first, second at 60%. This is the "would anyone accept this" check."""
+    sub = values[values["PLAYER_ID"].isin(ids)].drop_duplicates("PLAYER_ID")
+    if sub.empty:
+        return 0.0
+    repl = float(replacement.reindex(CATEGORY_NAMES).fillna(0).sum())
+    vals = sorted((sub["value"] - repl).clip(lower=0).tolist(), reverse=True)
+    return float(sum(v * (DEPTH ** i) for i, v in enumerate(vals)))
+
+
+def fairness(give_mv: float, get_mv: float) -> tuple[float, str]:
+    """Gap as a share of the bigger side, plus a label."""
+    big = max(give_mv, get_mv, 1e-9)
+    gap = (get_mv - give_mv) / big
+    if abs(gap) <= 0.08:
+        return gap, "Even trade"
+    if abs(gap) <= FAIR_GAP:
+        return gap, "Fair trade"
+    return gap, "You win this one" if gap > 0 else "You overpay"
+
+
+FAIR_GAP = 0.15        # packages within 15% of each other on market value count as fair
+NEED_FLOOR = 0.5       # needs can tilt a category's weight between 0.5x and 1x, never zero it
+
+
 def suggest_trades(me: str, rosters: pd.DataFrame, values: pd.DataFrame, replacement: pd.Series,
                    cat_rates: pd.DataFrame, partners: list[Partner], names: dict,
-                   per_side: int = 9, top: int = 5, max_per_partner: int = 2) -> list[TradeIdea]:
-    """Search 1-for-1 and 2-for-1 deals where both sides gain on their own weighted value."""
+                   per_side: int = 10, top: int = 5, max_per_partner: int = 2) -> list[TradeIdea]:
+    """Fair deals that help both teams.
+
+    1. Market value must match within ``FAIR_GAP``: no one accepts two stars for a role
+       player, whatever the category math says.
+    2. Among fair deals, each side must gain on its own category needs (weights floored
+       at ``NEED_FLOOR`` so needs tilt value instead of erasing it).
+    3. Rank by the smaller of the two gains, so the top idea is the most balanced win-win.
+    """
     if rosters is None or rosters.empty or values is None or values.empty:
         return []
     v = values.drop_duplicates("PLAYER_ID").set_index("PLAYER_ID")
@@ -157,66 +192,72 @@ def suggest_trades(me: str, rosters: pd.DataFrame, values: pd.DataFrame, replace
         r = r[~r["status"].map(is_unavailable)]
     r = r[r["PLAYER_ID"].isin(v.index)]
     repl = replacement.reindex(CATEGORY_NAMES).fillna(0).values
+    repl_total = float(repl.sum())
 
     def side(team):
         ids = r[r["team_key"] == team]["PLAYER_ID"].tolist()
         ids = sorted(ids, key=lambda i: -float(v.at[i, "value"]))[:per_side]
-        return ids, (v.loc[ids, Z].values if ids else np.zeros((0, len(Z))))
+        z = v.loc[ids, Z].values if ids else np.zeros((0, len(Z)))
+        mv = np.clip(v.loc[ids, "value"].values - repl_total, 0, None) if ids else np.zeros(0)
+        return ids, z, mv
 
     def weights(team):
         rates = cat_rates.loc[team] if team in cat_rates.index else None
-        return context_weights(rates).reindex(CATEGORY_NAMES).values
+        return context_weights(rates, floor=NEED_FLOOR).reindex(CATEGORY_NAMES).values
 
-    my_ids, my_z = side(me)
+    def pkg(xs):
+        xs = sorted(xs, reverse=True)
+        return xs[0] + (DEPTH * xs[1] if len(xs) > 1 else 0.0)
+
+    my_ids, my_z, my_mv = side(me)
     w_me = weights(me)
     ideas = []
-
-    def pkg(vals_sorted):
-        """Two-player packages: the second body counts 60%. Starting slots are limited,
-        so depth is worth less than concentrated value (why consolidation trades win)."""
-        v = sorted(vals_sorted, reverse=True)
-        return v[0] + (DEPTH * v[1] if len(v) > 1 else 0.0)
-
     for p in partners:
-        th_ids, th_z = side(p.team_key)
+        th_ids, th_z, th_mv = side(p.team_key)
         if not my_ids or not th_ids:
             continue
         w_th = weights(p.team_key)
-        # Value above replacement, weighted by each team's own needs.
-        mine_for_me = (my_z - repl) @ w_me
-        mine_for_th = (my_z - repl) @ w_th
-        theirs_for_me = (th_z - repl) @ w_me
-        theirs_for_th = (th_z - repl) @ w_th
+        mine_for_me, mine_for_th = (my_z - repl) @ w_me, (my_z - repl) @ w_th
+        theirs_for_me, theirs_for_th = (th_z - repl) @ w_me, (th_z - repl) @ w_th
         found = []
         give_sets = [(i,) for i in range(len(my_ids))] + list(combinations(range(len(my_ids)), 2))
         get_sets = [(j,) for j in range(len(th_ids))] + list(combinations(range(len(th_ids)), 2))
         for gs in give_sets:
+            mv_give = pkg([my_mv[i] for i in gs])
+            if mv_give <= 0:
+                continue
             for ts in get_sets:
                 if len(gs) == 2 and len(ts) == 2:
-                    continue                                   # keep it to 1-for-1 and 2-for-1
+                    continue                                   # 1-for-1 and 2-for-1 only
+                mv_get = pkg([th_mv[j] for j in ts])
+                gap = abs(mv_get - mv_give) / max(mv_get, mv_give)
+                if gap > FAIR_GAP:
+                    continue                                   # not a deal a real manager takes
                 d_me = pkg([theirs_for_me[j] for j in ts]) - pkg([mine_for_me[i] for i in gs])
                 d_th = pkg([mine_for_th[i] for i in gs]) - pkg([theirs_for_th[j] for j in ts])
-                if d_me > 0.3 and d_th > 0.3:          # both sides must feel the upgrade
-                    found.append((d_me + 0.6 * d_th, gs, ts, d_me, d_th))
+                if d_me > 0.15 and d_th > 0.15:
+                    score = min(d_me, d_th) + 0.2 * (d_me + d_th) - 2.0 * gap
+                    found.append((score, gs, ts, d_me, d_th))
         found.sort(key=lambda x: -x[0])
         used = set()
+        n_here = 0
         for _, gs, ts, d_me, d_th in found:
             gkey, tkey = tuple(my_ids[i] for i in gs), tuple(th_ids[j] for j in ts)
             if gkey in used or tkey in used:               # vary the players across ideas
                 continue
             used.update({gkey, tkey})
-            give = [my_ids[i] for i in gs]
-            get = [th_ids[j] for j in ts]
+            give, get = list(gkey), list(tkey)
             gn = [v.at[i, "PLAYER_NAME"] for i in give]
             tn = [v.at[j, "PLAYER_NAME"] for j in get]
             sell = (f"help in {' and '.join(p.they_need[:2])}" if p.they_need
                     else "a consolidation upgrade" if len(gs) > len(ts) else "added depth")
-            pitch = (f"Pitch it as {sell}. They come out {d_th:+.1f} on their own needs, "
-                     f"you come out {d_me:+.1f}.")
-            ideas.append(TradeIdea(p.team_key, give, get, gn, tn, d_me, d_th, pitch))
-            if len([i for i in ideas if i.partner == p.team_key]) >= max_per_partner:
+            pitch = f"Even on overall value, and it fits both rosters. Pitch it as {sell}."
+            ideas.append(TradeIdea(p.team_key, give, get, gn, tn, d_me, d_th, pitch,
+                                   pkg([my_mv[i] for i in gs]), pkg([th_mv[j] for j in ts])))
+            n_here += 1
+            if n_here >= max_per_partner:
                 break
-    ideas.sort(key=lambda i: -(i.mine + 0.6 * i.theirs))
+    ideas.sort(key=lambda i: -(min(i.mine, i.theirs) + 0.2 * (i.mine + i.theirs)))
     return ideas[:top]
 
 
