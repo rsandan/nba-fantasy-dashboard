@@ -309,8 +309,10 @@ def matchup_stories(sims: list, live: pd.DataFrame, names: dict, ranks: dict,
 
         games = ""
         if ra is not None and rb is not None and abs(ra - rb) >= 3:
-            more = s.team_a if ra > rb else s.team_b
-            games = f" {names.get(more)} has {int(abs(ra - rb))} more games left to play."
+            more, less = (s.team_a, s.team_b) if ra > rb else (s.team_b, s.team_a)
+            hi, lo = int(max(ra, rb)), int(min(ra, rb))
+            games = (f" {names.get(more)} has {hi} games left to {names.get(less)}'s {lo}, "
+                     f"a {hi - lo}-game edge.")
         swing_txt = (f" It comes down to {' and '.join(swing)}." if swing else "")
         record = f"leads {w}-{l}-{t} and " if started and w > l else ""
 
