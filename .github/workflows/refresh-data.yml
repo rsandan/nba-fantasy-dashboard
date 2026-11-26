@@ -8,8 +8,8 @@ on:
     - cron: "23 */3 * * *"     # every 3 hours
   workflow_dispatch:
     inputs:
-      force_boxscores:
-        description: "Skip stats.nba.com and build from cdn.nba.com box scores"
+      skip_stats_nba:
+        description: "Don't probe stats.nba.com (it blocks GitHub's runners)"
         type: boolean
         default: false
 
@@ -46,7 +46,7 @@ jobs:
       - name: Build snapshots
         run: |
           python scripts/refresh_data.py --out databranch \
-            ${{ inputs.force_boxscores && '--force-boxscores' || '' }}
+            ${{ inputs.skip_stats_nba && '--skip-stats-nba' || '' }}
 
       - name: Commit if anything changed
         working-directory: databranch

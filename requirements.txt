@@ -2,6 +2,7 @@
 yahoo_oauth>=2.1
 yahoo_fantasy_api>=2.12
 nba_api>=1.10
+lxml>=5.0          # Basketball-Reference tables in scripts/refresh_data.py
 # App + analytics
 streamlit>=1.60
 pandas>=2.2

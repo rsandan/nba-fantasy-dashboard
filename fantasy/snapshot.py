@@ -217,3 +217,136 @@ def aggregate_per_game(games: pd.DataFrame, last_n: int = 0) -> pd.DataFrame:
     out = agg.reset_index()
     out[STAT_COLS] = out[STAT_COLS].round(2)
     return out
+
+
+# ------------------------------------------------------- Basketball-Reference
+# Cloud-friendly per-game table (one page per season). NBA blocks GitHub's runners on
+# both stats.nba.com and cdn.nba.com; Basketball-Reference and ESPN don't.
+BBREF_PER_GAME = "https://www.basketball-reference.com/leagues/NBA_{end_year}_per_game.html"
+ESPN_SCOREBOARD = ("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
+                   "?dates={yyyymmdd}&limit=40")
+_BBREF_COLS = {"G": "GP", "MP": "MIN", "FG": "FGM", "FGA": "FGA", "FT": "FTM", "FTA": "FTA",
+               "3P": "FG3M", "PTS": "PTS", "TRB": "REB", "AST": "AST", "STL": "STL", "BLK": "BLK",
+               "TOV": "TOV"}
+
+
+def bbref_end_year(season: str) -> int:
+    """``'2026-27' -> 2027``: Basketball-Reference names seasons by the year they end."""
+    return int(season[:4]) + 1
+
+
+def nba_team(abbr) -> str | None:
+    from .nba_data import YAHOO_TO_NBA_TEAM
+    if not isinstance(abbr, str) or not abbr:
+        return None
+    return YAHOO_TO_NBA_TEAM.get(abbr.upper(), abbr.upper())
+
+
+def parse_bbref_per_game(html: str) -> pd.DataFrame:
+    """Basketball-Reference per-game page -> PLAYER_NAME, TEAM, GP + per-game STAT_COLS.
+
+    Traded players appear once per team plus a combined row (``TOT`` / ``2TM``); we keep
+    the combined line and label it with the player's most recent team.
+    """
+    tables = pd.read_html(io.StringIO(html), attrs={"id": "per_game_stats"})
+    df = tables[0]
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(-1)
+    team_col = "Team" if "Team" in df.columns else "Tm"
+    df = df[df["Player"].notna() & (df["Player"] != "Player")]
+    df = df[~df["Player"].astype(str).str.contains("League Average", na=False)].copy()
+    df["Player"] = df["Player"].astype(str).str.replace("*", "", regex=False).str.strip()
+    df["_combined"] = df[team_col].astype(str).str.fullmatch(r"TOT|\dTM")
+    df["_order"] = range(len(df))
+    rows = []
+    for _, grp in df.groupby(["Player", "Age"] if "Age" in df.columns else ["Player"], sort=False):
+        combined = grp[grp["_combined"]]
+        line = (combined if not combined.empty else grp).iloc[0]
+        teams = grp[~grp["_combined"]].sort_values("_order")
+        latest = teams.iloc[-1][team_col] if not teams.empty else line[team_col]
+        rec = {"PLAYER_NAME": line["Player"], "TEAM": nba_team(latest)}
+        for src, dst in _BBREF_COLS.items():
+            rec[dst] = pd.to_numeric(line.get(src), errors="coerce")
+        rows.append(rec)
+    out = pd.DataFrame(rows)
+    for c in ["GP", *STAT_COLS]:
+        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0)
+    return out[out["GP"] > 0].reset_index(drop=True)
+
+
+def attach_nba_ids(df: pd.DataFrame) -> pd.DataFrame:
+    """Add NBA person ids by name, using the player list bundled with nba_api (offline).
+
+    The ids drive headshot photos. Unmatched players get a stable negative id so joins
+    and de-duplication still work; the UI shows initials for those.
+    """
+    from nba_api.stats.static import players as static_players
+
+    from .nba_data import normalize_name
+
+    roster = pd.DataFrame(static_players.get_players())
+    roster["name_key"] = roster["full_name"].map(normalize_name)
+    roster = roster.sort_values("is_active", ascending=False).drop_duplicates("name_key")
+    ids = dict(zip(roster["name_key"], roster["id"]))
+    keys = df["PLAYER_NAME"].map(normalize_name)
+    fallback = keys.map(lambda k: -(int.from_bytes(k.encode()[:6].ljust(6, b"\0"), "big") % 10**9) - 1)
+    out = df.copy()
+    out["PLAYER_ID"] = keys.map(ids).fillna(fallback).astype("int64")
+    return out.drop_duplicates("PLAYER_ID")
+
+
+def parse_espn_scoreboard(raw: dict, game_date) -> pd.DataFrame:
+    """ESPN scoreboard for one day -> game_date, home, away (NBA tricodes)."""
+    rows = []
+    for ev in raw.get("events", []) or []:
+        season_type = ((ev.get("season") or {}).get("type"))
+        if season_type not in (None, 2):        # 1 preseason, 2 regular, 3 playoffs
+            continue
+        comp = (ev.get("competitions") or [{}])[0]
+        sides = {c.get("homeAway"): nba_team((c.get("team") or {}).get("abbreviation"))
+                 for c in comp.get("competitors", [])}
+        if sides.get("home") and sides.get("away"):
+            rows.append({"game_date": game_date, "home": sides["home"], "away": sides["away"]})
+    return pd.DataFrame(rows, columns=["game_date", "home", "away"])
+
+
+# ---------------------------------------------------------- "last N days" windows
+TOTAL_COLS = ["GP", *STAT_COLS]
+
+
+def to_totals(per_game: pd.DataFrame, as_of) -> pd.DataFrame:
+    """Per-game table -> season-to-date totals stamped with a date (one history row)."""
+    t = per_game[["PLAYER_ID", "PLAYER_NAME", "TEAM", "GP", *STAT_COLS]].copy()
+    for c in STAT_COLS:
+        t[c] = (t[c] * t["GP"]).round(1)
+    t.insert(0, "as_of", pd.Timestamp(as_of).date().isoformat())
+    return t
+
+
+def window_from_history(history: pd.DataFrame, as_of, days: int) -> pd.DataFrame:
+    """Per-game lines over roughly the last ``days`` days from cumulative snapshots.
+
+    Subtracts each player's totals as of ``days`` ago from today's totals. Empty until
+    the history reaches back far enough.
+    """
+    if history is None or history.empty:
+        return pd.DataFrame()
+    h = history.copy()
+    h["as_of"] = pd.to_datetime(h["as_of"]).dt.date
+    today = pd.Timestamp(as_of).date()
+    cutoff = (pd.Timestamp(as_of) - pd.Timedelta(days=days)).date()
+    cur = h[h["as_of"] == h.loc[h["as_of"] <= today, "as_of"].max()]
+    past = h[h["as_of"] <= cutoff]
+    if cur.empty or past.empty:
+        return pd.DataFrame()
+    base = past.sort_values("as_of").groupby("PLAYER_ID").tail(1).set_index("PLAYER_ID")
+    cur = cur.set_index("PLAYER_ID")
+    base = base.reindex(cur.index)
+    base[TOTAL_COLS] = base[TOTAL_COLS].fillna(0.0)
+    d = cur[TOTAL_COLS] - base[TOTAL_COLS]
+    d = d[d["GP"] > 0]
+    out = d[STAT_COLS].div(d["GP"], axis=0).round(2)
+    out["GP"] = d["GP"]
+    out["PLAYER_NAME"] = cur.loc[out.index, "PLAYER_NAME"]
+    out["TEAM"] = cur.loc[out.index, "TEAM"]
+    return out.reset_index()

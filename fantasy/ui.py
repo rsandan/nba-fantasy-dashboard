@@ -220,7 +220,7 @@ def initials(name: str) -> str:
 
 
 def avatar(name: str, nba_id=None, photo: bool = True) -> str:
-    if photo and nba_id is not None and nba_id == nba_id:
+    if photo and nba_id is not None and nba_id == nba_id and int(nba_id) > 0:
         url = f"https://cdn.nba.com/headshots/nba/latest/260x190/{int(nba_id)}.png"
         return f'<div class="av" style="background-image:url(\'{url}\')"></div>'
     return f'<div class="av">{e(initials(name))}</div>'

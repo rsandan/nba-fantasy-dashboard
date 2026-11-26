@@ -95,3 +95,64 @@ def test_read_falls_back_to_local_then_empty(tmp_path, monkeypatch):
 
 def test_game_ids():
     assert snapshot.regular_season_game_id("2025-26", 7) == "0022500007"
+
+
+BBREF_HTML = """<html><body><table id="per_game_stats"><thead><tr>
+<th>Rk</th><th>Player</th><th>Age</th><th>Team</th><th>Pos</th><th>G</th><th>GS</th><th>MP</th>
+<th>FG</th><th>FGA</th><th>FG%</th><th>3P</th><th>3PA</th><th>FT</th><th>FTA</th><th>TRB</th>
+<th>AST</th><th>STL</th><th>BLK</th><th>TOV</th><th>PTS</th></tr></thead><tbody>
+<tr><td>1</td><td>Shai Gilgeous-Alexander</td><td>28</td><td>OKC</td><td>PG</td><td>18</td><td>18</td>
+<td>34.1</td><td>11.2</td><td>21.0</td><td>.533</td><td>2.1</td><td>5.5</td><td>8.0</td><td>8.9</td>
+<td>5.1</td><td>6.3</td><td>1.8</td><td>0.9</td><td>2.4</td><td>32.5</td></tr>
+<tr><td>2</td><td>Traded Guy*</td><td>27</td><td>2TM</td><td>SF</td><td>10</td><td>4</td><td>25.0</td>
+<td>4.0</td><td>9.0</td><td>.444</td><td>1.0</td><td>3.0</td><td>1.0</td><td>1.5</td><td>4.0</td>
+<td>2.0</td><td>1.0</td><td>0.5</td><td>1.0</td><td>10.0</td></tr>
+<tr><td>2</td><td>Traded Guy*</td><td>27</td><td>BRK</td><td>SF</td><td>6</td><td>4</td><td>26.0</td>
+<td>4.0</td><td>9.0</td><td>.444</td><td>1.0</td><td>3.0</td><td>1.0</td><td>1.5</td><td>4.0</td>
+<td>2.0</td><td>1.0</td><td>0.5</td><td>1.0</td><td>10.0</td></tr>
+<tr><td>2</td><td>Traded Guy*</td><td>27</td><td>PHO</td><td>SF</td><td>4</td><td>0</td><td>24.0</td>
+<td>4.0</td><td>9.0</td><td>.444</td><td>1.0</td><td>3.0</td><td>1.0</td><td>1.5</td><td>4.0</td>
+<td>2.0</td><td>1.0</td><td>0.5</td><td>1.0</td><td>10.0</td></tr>
+<tr><td>Rk</td><td>Player</td><td>Age</td><td>Team</td><td>Pos</td><td>G</td><td>GS</td><td>MP</td>
+<td>FG</td><td>FGA</td><td>FG%</td><td>3P</td><td>3PA</td><td>FT</td><td>FTA</td><td>TRB</td>
+<td>AST</td><td>STL</td><td>BLK</td><td>TOV</td><td>PTS</td></tr>
+<tr><td></td><td>League Average</td><td></td><td></td><td></td><td>10</td><td></td><td>20</td>
+<td>3</td><td>7</td><td>.45</td><td>1</td><td>3</td><td>1</td><td>2</td><td>3</td><td>2</td><td>1</td>
+<td>0.5</td><td>1</td><td>9</td></tr>
+</tbody></table></body></html>"""
+
+
+def test_bbref_keeps_combined_line_with_latest_team():
+    df = snapshot.parse_bbref_per_game(BBREF_HTML).set_index("PLAYER_NAME")
+    assert list(df.index) == ["Shai Gilgeous-Alexander", "Traded Guy"]
+    assert df.loc["Traded Guy", "GP"] == 10 and df.loc["Traded Guy", "TEAM"] == "PHX"
+    assert df.loc["Shai Gilgeous-Alexander", "FG3M"] == 2.1 and df.loc["Shai Gilgeous-Alexander", "REB"] == 5.1
+
+
+def test_attach_nba_ids_matches_real_players_and_flags_unknown():
+    df = snapshot.attach_nba_ids(snapshot.parse_bbref_per_game(BBREF_HTML)).set_index("PLAYER_NAME")
+    assert df.loc["Shai Gilgeous-Alexander", "PLAYER_ID"] == 1628983
+    assert df.loc["Traded Guy", "PLAYER_ID"] < 0
+    ready = nba_data.standardize_player_frame(df.reset_index())
+    assert {"PLAYER_ID", "name_key", "GP"} <= set(ready.columns)
+
+
+def test_espn_scoreboard_maps_team_codes():
+    raw = {"events": [{"season": {"type": 2}, "competitions": [{"competitors": [
+        {"homeAway": "home", "team": {"abbreviation": "GS"}},
+        {"homeAway": "away", "team": {"abbreviation": "UTAH"}}]}]},
+        {"season": {"type": 1}, "competitions": [{"competitors": [
+            {"homeAway": "home", "team": {"abbreviation": "LAL"}},
+            {"homeAway": "away", "team": {"abbreviation": "BOS"}}]}]}]}
+    df = snapshot.parse_espn_scoreboard(raw, date(2026, 11, 26))
+    assert df.to_dict("records") == [{"game_date": date(2026, 11, 26), "home": "GSW", "away": "UTA"}]
+
+
+def test_window_from_history_diffs_cumulative_totals():
+    day1 = pd.DataFrame([dict(PLAYER_ID=1, PLAYER_NAME="A", TEAM="OKC", GP=10, MIN=30, FGM=5, FGA=10,
+                              FTM=2, FTA=2, FG3M=1, PTS=20, REB=5, AST=5, STL=1, BLK=1, TOV=2)])
+    day15 = day1.assign(GP=14, PTS=(20 * 10 + 40 * 4) / 14)       # 4 new games at 40 ppg
+    hist = pd.concat([snapshot.to_totals(day1, "2026-11-10"), snapshot.to_totals(day15, "2026-11-25")])
+    w = snapshot.window_from_history(hist, "2026-11-25", 14)
+    assert w.loc[0, "GP"] == 4 and w.loc[0, "PTS"] == pytest.approx(40, abs=0.1)
+    assert snapshot.window_from_history(hist, "2026-11-25", 30).empty   # not enough history yet

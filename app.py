@@ -404,8 +404,8 @@ def page_standings():
                     f"Top {META.num_playoff_teams} make it; exact ties are broken at random.")
 
 
-WINDOWS = {"Blended": ("blend", 0), "This season": ("cur", 0), "Last 15": ("cur", 15),
-           "Last 30": ("cur", 30), "Last season": ("prior", 0)}
+WINDOWS = {"Blended": ("blend", 0), "This season": ("cur", 0), "Last 2 weeks": ("cur", 14),
+           "Last 30 days": ("cur", 30), "Last season": ("prior", 0)}
 
 
 def window_players(label: str) -> pd.DataFrame:
