@@ -94,7 +94,8 @@ button[kind], [data-testid="stPopover"] button { min-height:44px; }
 .row.me { background:var(--fill2); }
 .row .rk { width:22px; text-align:center; font-size:15px; color:var(--label2); font-variant-numeric:tabular-nums; }
 .row .main { flex:1; min-width:0; }
-.row .t1 { font-size:17px; color:var(--label); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.row .t1 { font-size:17px; line-height:21px; color:var(--label); overflow:hidden; overflow-wrap:anywhere;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
 .row .t2 { font-size:13px; color:var(--label2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px; }
 .row .end { text-align:right; flex:none; }
 .row .e1 { font-size:17px; font-weight:600; color:var(--label); font-variant-numeric:tabular-nums; }
@@ -119,11 +120,21 @@ button[kind], [data-testid="stPopover"] button { min-height:44px; }
 .av { width:42px; height:42px; box-shadow:inset 0 0 0 .5px var(--edge); border-radius:50%; flex:none; background:var(--fill) center 20%/cover no-repeat;
   display:flex; align-items:center; justify-content:center; font-size:15px; font-weight:600; color:var(--label2); }
 
+/* ---------- team logos (Yahoo profile pictures, initials if none) ---------- */
+.tl { width:34px; height:34px; border-radius:50%; flex:none; object-fit:cover; background:var(--fill);
+  box-shadow:0 0 0 .5px var(--edge); display:flex; align-items:center; justify-content:center;
+  font-size:13px; font-weight:700; color:var(--label2); }
+.tl.lg { width:52px; height:52px; font-size:18px; box-shadow:0 0 0 2px var(--card), 0 2px 10px rgba(0,0,0,.18); }
+.row .rk + .tl { margin-left:-4px; }
+
 /* ---------- scoreboard (matchup hero) ---------- */
 .hero { background:linear-gradient(165deg, color-mix(in srgb, var(--blue) 13%, var(--card)) 0%, var(--card) 48%);
   border-radius:22px; padding:18px 16px 6px; border:.5px solid var(--edge); box-shadow:var(--shadow); }
-.hero .top { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); align-items:end; gap:8px; }
-.hero .tn { font-size:15px; font-weight:600; color:var(--label); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.hero .top { display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); align-items:end; gap:10px; }
+.hero .tn { font-size:15px; line-height:19px; font-weight:600; color:var(--label); margin-top:8px; min-height:38px;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; overflow-wrap:anywhere; }
+.hero .top > div:first-child, .hero .r { display:flex; flex-direction:column; min-width:0; }
+.hero .r { align-items:flex-end; }
 .hero .r { text-align:right; }
 .hero .big { font-family:var(--display); font-size:52px; line-height:1; font-weight:800; letter-spacing:-2px;
   font-variant-numeric:tabular-nums; margin-top:4px; }
@@ -288,6 +299,14 @@ def rank(n: int) -> str:
 def mini_bar(p: float) -> str:
     p = 0.0 if p != p else max(0.0, min(1.0, p))
     return f'<div class="mini"><span style="width:{p * 100:.1f}%"></span></div>'
+
+
+def team_logo(url, name: str, size: str = "") -> str:
+    """Team profile picture from Yahoo; initials in a circle when there isn't one."""
+    cls = f"tl {size}".strip()
+    if isinstance(url, str) and url.startswith("https://"):
+        return (f'<img class="{cls}" src="{e(url)}" alt="" loading="lazy" referrerpolicy="no-referrer">')
+    return f'<div class="{cls}">{e(initials(name))}</div>'
 
 
 def diverging(p: float) -> str:

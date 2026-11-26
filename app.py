@@ -170,6 +170,11 @@ def core():
 # The user's team lives in session state and is mirrored into the URL (?team=3), so a
 # bookmark or an Add to Home Screen icon opens straight to their own matchup.
 NAMES = dict(zip(load_teams(KEY)["team_key"], load_teams(KEY)["team_name"]))
+LOGOS = dict(zip(load_teams(KEY)["team_key"], load_teams(KEY).get("logo_url", pd.Series(dtype=object))))
+
+
+def logo(team_key: str, size: str = "") -> str:
+    return ui.team_logo(LOGOS.get(team_key), NAMES.get(team_key, ""), size)
 
 
 def _short(team_key: str) -> str:
@@ -245,10 +250,10 @@ def scoreboard(o: dict, card: bool = True) -> str:
     html = [
         f'<div class="hero" style="{"" if card else "background:transparent;padding:0"}">'
         '<div class="top">'
-        f'<div><div class="tn">{e(na)}</div><div class="big {"" if a_fav else "dim"}">{pct(o["pa"])}</div></div>'
+        f'<div>{logo(o["ka"], "lg")}<div class="tn">{e(na)}</div><div class="big {"" if a_fav else "dim"}">{pct(o["pa"])}</div></div>'
         f'<div class="mid"><div class="score">{f"{w}–{l}–{t}" if started else "vs"}</div>'
         f'<div class="cap">{"categories" if started else "not started"}</div></div>'
-        f'<div class="r"><div class="tn">{e(nb)}</div><div class="big {"dim" if a_fav else ""}">{pct(o["pb"])}</div></div>'
+        f'<div class="r">{logo(o["kb"], "lg")}<div class="tn">{e(nb)}</div><div class="big {"dim" if a_fav else ""}">{pct(o["pb"])}</div></div>'
         "</div>",
         f'<div class="bar"><span style="width:{(o["pa"] + o["tie"] / 2) * 100:.1f}%"></span><span class="b"></span></div>',
         f'<div class="meta">Chance to win the week · {gl(o["a"])} vs {gl(o["b"])} games left{tie}</div>',
@@ -365,7 +370,7 @@ def page_standings():
         order = t.sort_values(rp, ascending=False).index
         rows = [ui.row(e(NAMES.get(k, k)),
                        f"All-play {t.at[k, 'ap_pct']:.3f} · luck {signed(luck[k], 3)}".replace("0.", "."),
-                       t.at[k, rec], f"{t.at[k, rp]:.3f}".lstrip("0"), lead=ui.rank(i), me=k == me)
+                       t.at[k, rec], f"{t.at[k, rp]:.3f}".lstrip("0"), lead=ui.rank(i) + logo(k), me=k == me)
                 for i, k in enumerate(order, 1)]
         ui.group(rows)
         ui.footnote("<b>All-play</b> is your record if you played every team every week. "
@@ -378,7 +383,7 @@ def page_standings():
         rates = ap["category_rates"]
         rows = [ui.row(e(NAMES.get(k, k)), e(_cat_summary(rates, k)), pct(pr.get(k)),
                        f"form {form.get(k, float('nan')):.3f}".replace("0.", "."),
-                       lead=ui.rank(i), me=k == me, extra=ui.mini_bar(pr.get(k, 0)))
+                       lead=ui.rank(i) + logo(k), me=k == me, extra=ui.mini_bar(pr.get(k, 0)))
                 for i, k in enumerate(order, 1)]
         ui.group(rows)
         ui.footnote("<b>Power</b> is each team's chance to beat an average league opponent in a normal "
@@ -397,7 +402,7 @@ def page_standings():
                 rows.append('<div class="cut">Playoff line</div>')
             rows.append(ui.row(e(NAMES.get(k, k)),
                                f"Proj. {odds.at[k, 'exp_win_pct']:.3f}".replace("0.", ".") + f" · #1 seed {pct(odds.at[k, 'top_seed_odds'])}",
-                               pct(odds.at[k, "playoff_odds"]), lead=ui.rank(i), me=k == me,
+                               pct(odds.at[k, "playoff_odds"]), lead=ui.rank(i) + logo(k), me=k == me,
                                extra=ui.mini_bar(odds.at[k, "playoff_odds"])))
         ui.group(rows)
         ui.footnote(f"The rest of the season played out 2,000 times on the real schedule. "
