@@ -17,7 +17,7 @@ import pandas as pd
 import streamlit as st
 
 from fantasy import matchup_model as mm
-from fantasy import insights, nba_data, power, trade
+from fantasy import hub, insights, nba_data, power, trade
 from fantasy import ui
 from fantasy.categories import BY_NAME, CATEGORIES, CATEGORY_NAMES, category_value, compare
 from fantasy.data_source import connect
@@ -80,7 +80,7 @@ def team_weeks() -> pd.DataFrame:
     return pd.concat([f for f in frames if not f.empty], ignore_index=True)
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)          # lineups change daily: keep this fresh
 def load_rosters(key: str, team_keys: tuple) -> pd.DataFrame:
     return SOURCE.rosters(list(team_keys))
 
@@ -127,7 +127,7 @@ def valuation(players: pd.DataFrame, punts: tuple, n_teams: int, roster_size: in
     return value_players(players, n_teams=n_teams, roster_size=roster_size, punts=punts)
 
 
-@st.cache_data(ttl=1800, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def matched_rosters(key: str, values: pd.DataFrame) -> pd.DataFrame:
     teams = load_teams(key)
     ros = load_rosters(key, tuple(teams["team_key"]))
@@ -190,6 +190,28 @@ def my_plan(c: dict, live: pd.DataFrame, me: str):
     return plan_for(c["model"], me, live, vals.table if vals is not None else None,
                     vals.replacement if vals is not None else None, c["rosters"],
                     load_free_agents(KEY), games_left, c["sig"])
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def roster_strength(rosters: pd.DataFrame, values: pd.DataFrame | None) -> pd.DataFrame:
+    return hub.roster_z(rosters, values)
+
+
+def profile_for(c: dict, team: str):
+    rz = roster_strength(c["rosters"], c["vals"].table if c["vals"] is not None else None)
+    return hub.team_profile(team, c["ap"]["category_rates"], rz)
+
+
+def playing_today() -> set:
+    s = load_schedule(SEASON)
+    if s is None or s.empty:
+        return set()
+    day = s[s["game_date"] == TODAY]
+    return set(day["home"]) | set(day["away"])
+
+
+def lineup_issues(c: dict, me: str):
+    return hub.lineup_check(me, c["rosters"], playing_today())
 
 
 def model_signature(tw: pd.DataFrame) -> str:
@@ -365,6 +387,19 @@ def page_week():
         plan = my_plan(c, live, me)
         if plan:
             st.html(ui.plan_card(plan, NAMES.get(me, ""), NAMES.get(plan.opp, ""), logo(me)))
+        issues, have_lineup = lineup_issues(c, me)
+        if have_lineup:
+            st.html(ui.lineup_card(issues, f"{TODAY:%a %b %-d}"))
+        prof = profile_for(c, me)
+        if prof:
+            st.html(ui.profile_card(prof, "Strengths & weaknesses",
+                                    "Your league rank in each category: past results and current roster"))
+        opp = plan.opp if plan else None
+        if opp:
+            oprof = profile_for(c, opp)
+            if oprof:
+                with st.expander(f"Scout {NAMES.get(opp, 'your opponent')}"):
+                    st.html(ui.profile_card(oprof, NAMES.get(opp, ""), "Their league rank in each category"))
 
     ui.section("Your league" if mine else "Matchups")
     for s in others:
@@ -402,6 +437,9 @@ def page_home():
 
     sims = week_sims(model, live, c["sig"])
     if me:
+        issues, have_lineup = lineup_issues(c, me)
+        if have_lineup and issues:
+            st.html(ui.lineup_card(issues, f"{TODAY:%a %b %-d}"))
         plan = my_plan(c, live, me)
         if plan:
             st.html(ui.plan_card(plan, NAMES.get(me, ""), NAMES.get(plan.opp, ""), logo(me)))
@@ -634,6 +672,41 @@ def _roster_options(team_key: str, ros: pd.DataFrame, vals: pd.DataFrame) -> dic
     return dict(zip(top["PLAYER_ID"], top["PLAYER_NAME"]))
 
 
+def _load_trade(partner: str, give: list, get: list):
+    st.session_state["give"] = give
+    st.session_state["partner"] = partner
+    st.session_state[f"get_{partner}"] = get
+
+
+def _trade_hub(c: dict, me: str, ros: pd.DataFrame, res):
+    if res.table.empty or ros.empty:
+        return
+    rates = c["ap"]["category_rates"]
+    rz = roster_strength(ros, res.table)
+    partners = hub.trade_partners(me, list(NAMES), rates, rz)
+    ui.section("Best trade partners")
+    rows = []
+    for p in partners[:4]:
+        need = f"Needs your {', '.join(p.they_need[:2])}" if p.they_need else "No clear need you cover"
+        have = f"has {', '.join(p.they_have[:2])}" if p.they_have else "little you need"
+        rows.append(ui.row(e(NAMES.get(p.team_key, "")), e(f"{need} · {have}"), f"{p.fit}",
+                           "fit", lead=logo(p.team_key)))
+    ui.group(rows)
+    ui.footnote("Fit is how well your needs interlock: they're strong where you're weak and the other way around.")
+
+    ideas = hub.suggest_trades(me, ros, res.table, res.replacement, rates, partners, NAMES)
+    if not ideas:
+        return
+    ui.section("Suggested trades")
+    for i, idea in enumerate(ideas):
+        st.html(ui.idea_card(idea, NAMES.get(idea.partner, ""), logo(idea.partner)))
+        st.button("Open in trade builder", key=f"load_trade_{i}", icon=":material/swap_horiz:",
+                  type="tertiary", on_click=_load_trade, args=(idea.partner, idea.give, idea.get))
+    ui.footnote("Searched every 1-for-1 and 2-for-1 with each team and kept deals where both sides gain, "
+                "each judged on its own category needs. The second player in a 2-for-1 counts 60%, "
+                "because starting spots are limited.")
+
+
 def page_trade():
     c = core()
     ap = c["ap"]
@@ -646,6 +719,8 @@ def page_trade():
     punts = st.session_state.get("trade_punts") or []
     res = valuation(c["players"], tuple(punts), META.num_teams, META.roster_size)
     ros = matched_rosters(KEY, res.table)
+    _trade_hub(c, me, ros, res)
+    ui.section("Build your own")
 
     ui.section("You send")
     mine_opts = _roster_options(me, ros, res.table)
@@ -680,7 +755,7 @@ def page_trade():
         body += ". They come out ahead too, so it should be an easy sell."
     st.html(
         '<div class="verdict">'
-        f'<div class="h">{e(head)}</div><div class="b">{e(body.strip().capitalize())}</div>'
+        f'<div class="h">{e(head)}</div><div class="b">{e(body.strip()[:1].upper() + body.strip()[1:])}</div>'
         '<div class="nums">'
         f'<div class="n"><div class="k">You</div><div class="v {ui.sign_class(mine.weighted_delta)}">'
         f'{signed(mine.weighted_delta)}</div></div>'

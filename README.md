@@ -109,6 +109,19 @@ tests/                     46 tests: parsing, math, model skill/calibration, lea
   a wire report from the transaction log (trades and who won them, scooped drops,
   steals, regrets, grinders, quiet managers) and win/loss streaks.
 
+## Trade Hub, team profiles and lineup check (`fantasy/hub.py`)
+
+* **Strengths & weaknesses** (This Week): your league rank in each category from past
+  results and from the current roster, with a punt-or-invest note. Scout your opponent's
+  card from the same page.
+* **Trade Hub** (Trade): best partners by how well your needs interlock, and suggested
+  1-for-1 / 2-for-1 deals where *both* teams gain on their own category needs. One tap loads
+  a suggestion into the trade builder. Cards and builder share one score
+  (`trade.package_value`: value above replacement, second player in a package at 60%).
+* **Lineup check** (This Week, and Home when something needs fixing): injured players in
+  active slots, starters with no game today while an eligible bench player has one, and
+  injured bench players who belong on IL.
+
 ## How NBA stats load (and why pages are fast)
 
 stats.nba.com blocks or throttles most cloud hosts, including Render, so the app never

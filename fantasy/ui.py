@@ -223,6 +223,50 @@ button[kind], [data-testid="stPopover"] button { min-height:44px; }
 .wire .row .meta { display:flex; align-items:center; gap:8px; margin-bottom:5px; }
 .wire .row .meta .when { font-size:12px; color:var(--label3); }
 
+/* ---------- strengths & weaknesses ---------- */
+.prof { background:var(--card); border-radius:22px; padding:16px; border:.5px solid var(--edge); box-shadow:var(--shadow); }
+.prof .t { font-family:var(--display); font-size:19px; font-weight:800; letter-spacing:-.3px; color:var(--label); }
+.prof .s { font-size:13px; color:var(--label2); margin-top:2px; }
+.prof .grid { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-top:14px; }
+.pc { border-radius:14px; padding:10px 10px 9px; background:var(--fill2); position:relative; overflow:hidden; }
+.pc.strength { background:color-mix(in srgb, var(--green) 14%, transparent); }
+.pc.weakness { background:color-mix(in srgb, var(--red) 13%, transparent); }
+.pc .k { font-size:12px; font-weight:700; letter-spacing:.3px; color:var(--label2); }
+.pc .r { font-family:var(--display); font-size:26px; font-weight:800; letter-spacing:-.8px; color:var(--label);
+  font-variant-numeric:tabular-nums; line-height:1.15; margin-top:2px; }
+.pc.strength .r { color:var(--green); } .pc.weakness .r { color:var(--red); }
+.pc .r small { font-size:13px; font-weight:600; color:var(--label3); letter-spacing:0; margin-left:1px; }
+.pc .d { font-size:11px; color:var(--label2); font-variant-numeric:tabular-nums; margin-top:1px; }
+.prof .adv { font-size:15px; line-height:21px; color:var(--label); margin-top:14px; padding-top:12px;
+  border-top:.5px solid var(--sep); }
+
+/* ---------- trade hub ---------- */
+.fit { font-family:var(--display); font-size:20px; font-weight:800; letter-spacing:-.5px; font-variant-numeric:tabular-nums; }
+.idea { background:var(--card); border-radius:20px; padding:14px 16px; border:.5px solid var(--edge); box-shadow:var(--shadow); }
+.idea .hd { display:flex; align-items:center; gap:10px; }
+.idea .hd .nm { font-size:15px; font-weight:700; color:var(--label); flex:1; min-width:0; }
+.idea .sw { display:grid; grid-template-columns:1fr auto 1fr; gap:10px; align-items:center; margin-top:12px; }
+.idea .sw .k { font-size:11px; font-weight:800; letter-spacing:.6px; color:var(--label3); text-transform:uppercase; }
+.idea .sw .p { font-size:15px; font-weight:600; color:var(--label); line-height:20px; margin-top:2px; }
+.idea .sw .ar { font-size:20px; color:var(--label3); }
+.idea .sw .rt { text-align:right; }
+.idea .nums { display:flex; gap:8px; margin-top:12px; }
+.idea .nums span { font-size:12px; font-weight:800; padding:4px 8px; border-radius:8px; font-variant-numeric:tabular-nums;
+  color:var(--green); background:color-mix(in srgb, var(--green) 14%, transparent); }
+.idea .nums span.them { color:var(--blue); background:color-mix(in srgb, var(--blue) 14%, transparent); }
+.idea .pt { font-size:14px; line-height:19px; color:var(--label2); margin-top:10px; }
+
+/* ---------- lineup check ---------- */
+.lu { background:var(--card); border-radius:22px; padding:14px 16px 4px; border:.5px solid var(--edge); box-shadow:var(--shadow); }
+.lu .t { display:flex; align-items:center; gap:8px; font-family:var(--display); font-size:17px; font-weight:800; color:var(--label); }
+.lu .t .dot { width:9px; height:9px; border-radius:50%; background:var(--orange); }
+.lu .t .dot.ok { background:var(--green); }
+.lu .i { padding:10px 0; border-top:.5px solid var(--sep); }
+.lu .t + .i, .lu .t + .ok { margin-top:10px; }
+.lu .i .a { font-size:15px; font-weight:700; color:var(--label); }
+.lu .i .b { font-size:14px; color:var(--label2); margin-top:2px; line-height:19px; }
+.lu .ok { font-size:14px; color:var(--label2); padding:0 0 10px; }
+
 /* native widgets: soften to match, 44pt rows for radio lists */
 [data-testid="stRadioGroup"] { gap:0 !important; width:100%; }
 [data-testid="stRadioGroup"] > div { width:100%; }
@@ -417,6 +461,48 @@ def wire_list(stories, logo_fn) -> str:
         rows.append(f'<div class="row">{lead}<div class="main"><div class="meta">{tag(s.tag)}{when}</div>'
                     f'<div class="t1">{e(s.headline)}</div><div class="t2">{e(s.dek)}</div></div></div>')
     return '<div class="list wire">' + "".join(rows) + "</div>"
+
+
+def profile_card(prof, title: str, sub: str) -> str:
+    cells = []
+    for c, r in prof.table.iterrows():
+        rank = r["avg_rank"]
+        shown = int(round(rank))
+        bits = []
+        if r["results_rank"] is not None and r["results_rank"] == r["results_rank"]:
+            bits.append(f"results #{int(r['results_rank'])}")
+        if r["roster_rank"] is not None and r["roster_rank"] == r["roster_rank"]:
+            bits.append(f"roster #{int(r['roster_rank'])}")
+        cells.append(f'<div class="pc {r["label"]}"><div class="k">{e(c)}</div>'
+                     f'<div class="r">{shown}<small>{_ordinal(shown)}</small></div>'
+                     f'<div class="d">{e(" · ".join(bits))}</div></div>')
+    return (f'<div class="prof"><div class="t">{e(title)}</div><div class="s">{e(sub)}</div>'
+            f'<div class="grid">{"".join(cells)}</div><div class="adv">{e(prof.advice)}</div></div>')
+
+
+def _ordinal(n: int) -> str:
+    return "th" if 10 <= n % 100 <= 20 else {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+
+
+def idea_card(idea, partner_name: str, logo_html: str) -> str:
+    give = "<br>".join(e(n) for n in idea.give_names)
+    get = "<br>".join(e(n) for n in idea.get_names)
+    return (f'<div class="idea"><div class="hd">{logo_html}<div class="nm">with {e(partner_name)}</div></div>'
+            f'<div class="sw"><div><div class="k">You send</div><div class="p">{give}</div></div>'
+            f'<div class="ar">⇄</div><div class="rt"><div class="k">You get</div><div class="p">{get}</div></div></div>'
+            f'<div class="nums"><span>You {signed(idea.mine)}</span><span class="them">Them {signed(idea.theirs)}</span></div>'
+            f'<div class="pt">{e(idea.pitch)}</div></div>')
+
+
+def lineup_card(issues, today_label: str) -> str:
+    if not issues:
+        return (f'<div class="lu"><div class="t"><span class="dot ok"></span>Lineup check · {e(today_label)}</div>'
+                '<div class="ok">Your lineup is set. Every active player has a game or there is no better option on the bench.</div></div>')
+    rows = "".join(f'<div class="i"><div class="a">{e(i.title)}</div><div class="b">{e(i.detail)}</div></div>'
+                   for i in issues)
+    n = len(issues)
+    return (f'<div class="lu"><div class="t"><span class="dot"></span>{n} lineup fix{"es" if n != 1 else ""} · '
+            f'{e(today_label)}</div>{rows}</div>')
 
 
 def group(rows: list[str]) -> None:

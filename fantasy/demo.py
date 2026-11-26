@@ -219,9 +219,24 @@ def _rosters(rng, players, keys, size=13):
     for i, (_, p) in enumerate(taken.iterrows()):
         rows.append({"player_id": int(p["PLAYER_ID"]) % 100000, "name": p["PLAYER_NAME"],
                      "editorial_team_abbr": YAHOO_ABBR.get(p["TEAM"], p["TEAM"]),
-                     "eligible_positions": ["PG", "SG", "SF", "PF", "C"][i % 5], "status": "",
+                     "eligible_positions": ["PG", "SG", "SF", "PF", "C"][(i // len(keys)) % 5], "status": "",
                      "team_key": keys[i % len(keys)]})
     rosters = pd.DataFrame(rows)
+    # Yahoo-style eligibility and today's lineup slots: 10 active, the rest on the bench.
+    elig = {"PG": ["PG", "G", "Util"], "SG": ["SG", "G", "Util"], "SF": ["SF", "F", "Util"],
+            "PF": ["PF", "F", "Util"], "C": ["C", "Util"]}
+    slots = ["PG", "SG", "G", "SF", "PF", "F", "C", "C", "Util", "Util"]
+    rosters["eligible_positions"] = rosters["eligible_positions"].map(elig)
+    sel = []
+    for _, grp in rosters.groupby("team_key", sort=False):
+        free = list(slots)
+        for e in grp["eligible_positions"]:
+            s = next((x for x in free if x in e), None)
+            if s:
+                free.remove(s)
+            sel.append(s or "BN")
+    rosters["selected_position"] = pd.Series(sel, index=rosters.sort_values("team_key", kind="stable").index).reindex(rosters.index)
+    rosters.loc[rosters.groupby("team_key").head(1).index[:2], "status"] = "O"   # two injured starters
     fa = order.iloc[len(keys) * size: len(keys) * size + 150]
     free = pd.DataFrame({"player_id": fa["PLAYER_ID"].astype(int) % 100000, "name": fa["PLAYER_NAME"],
                          "editorial_team_abbr": fa["TEAM"].map(lambda t: YAHOO_ABBR.get(t, t)),

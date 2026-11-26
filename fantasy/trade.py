@@ -47,6 +47,26 @@ def context_weights(cat_rates: pd.Series | None, punts=(), floor: float = 0.25) 
     return w
 
 
+DEPTH = 0.6   # the second player in a two-player package counts 60%: starting spots are limited
+
+
+def package_value(values: pd.DataFrame, ids: list, replacement: pd.Series, weights: pd.Series) -> float:
+    """Weighted value above replacement of a set of players, best first, depth discounted.
+
+    Above replacement (not raw z) because a traded-away roster spot gets refilled from
+    waivers; discounted depth because two good players can't both use one lineup slot's
+    worth of starts. Shared by the trade builder and the trade-suggestion search.
+    """
+    sub = values[values["PLAYER_ID"].isin(ids)].drop_duplicates("PLAYER_ID")
+    if sub.empty:
+        return 0.0
+    repl = replacement.reindex(CATEGORY_NAMES).fillna(0)
+    w = weights.reindex(CATEGORY_NAMES).fillna(1.0)
+    per = sum((sub[f"z_{c}"] - repl[c]) * w[c] for c in CATEGORY_NAMES)
+    vals = sorted(per.tolist(), reverse=True)
+    return float(sum(v * (DEPTH ** i) for i, v in enumerate(vals)))
+
+
 @dataclass
 class TradeEval:
     table: pd.DataFrame
@@ -66,7 +86,7 @@ def evaluate_trade(values: pd.DataFrame, give_ids: list, get_ids: list,
                           "delta": delta, "weight": w, "weighted_delta": delta * w})
     active = w > 0
     raw = float(delta[active].sum())
-    weighted = float((delta * w)[active].sum())
+    weighted = package_value(values, get_ids, replacement, w) - package_value(values, give_ids, replacement, w)
     # Thresholds in z units: ~0.5 z is roughly the gap between adjacent draft rounds.
     if weighted > 0.75:
         verdict = "Accept: clear win for your build"

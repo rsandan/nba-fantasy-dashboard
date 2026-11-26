@@ -225,17 +225,7 @@ def game_plan(me: str, live: pd.DataFrame, model: mm.TeamModel, values: pd.DataF
                               f"You lead it {p[c]:.0%} of the time, projected {_fmt(c, proj_me[c])} to "
                               f"{_fmt(c, proj_op[c])}. {tip}", f"{p[c]:.0%}", 3 + 6 * (0.8 - p[c])))
 
-    # ---- 4. lineup hygiene: injured players taking active slots
-    if not rosters.empty and "status" in rosters:
-        mine_all = rosters[rosters["team_key"] == me]
-        hurt = mine_all[mine_all["status"].fillna("").isin(INJURED)]
-        if "selected_position" in hurt:
-            hurt = hurt[~hurt["selected_position"].isin(BENCH_SLOTS)]
-        if not hurt.empty:
-            who = ", ".join(hurt["name"].head(2))
-            actions.append(Action("lineup", f"Get {who} out of your lineup",
-                                  "Listed as out or injured but still in an active slot. Every game he "
-                                  "misses there is a wasted start.", "Free games", 12))
+    # (Injured players in active slots are handled by the Lineup Check card.)
 
     # ---- 5. volume
     if rem_me is not None and rem_op is not None:
