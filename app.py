@@ -250,7 +250,7 @@ def scoreboard(o: dict, card: bool = True) -> str:
         f'<div class="cap">{"categories" if started else "not started"}</div></div>'
         f'<div class="r"><div class="tn">{e(nb)}</div><div class="big {"dim" if a_fav else ""}">{pct(o["pb"])}</div></div>'
         "</div>",
-        f'<div class="bar"><span style="width:{(o["pa"] + o["tie"] / 2) * 100:.1f}%"></span></div>',
+        f'<div class="bar"><span style="width:{(o["pa"] + o["tie"] / 2) * 100:.1f}%"></span><span class="b"></span></div>',
         f'<div class="meta">Chance to win the week · {gl(o["a"])} vs {gl(o["b"])} games left{tie}</div>',
     ]
     for cat in CATEGORIES:
@@ -262,9 +262,9 @@ def scoreboard(o: dict, card: bool = True) -> str:
         proj = lambda v: f'<div class="proj">proj {fmt_cat(v, cat.name)}</div>' if started else ""
         html.append(
             '<div class="cat">'
-            f'<div><div class="v {"lead" if lead == 1 else ""}">{fmt_cat(shown_a, cat.name)}</div>{proj(pa)}</div>'
-            f'<div class="c"><div class="cn">{cat.name}</div>{ui.mini_bar(p)}<div class="p">{pct(p)}</div></div>'
-            f'<div class="r"><div class="v r {"lead" if lead == 0 else ""}">{fmt_cat(shown_b, cat.name)}</div>'
+            f'<div><div class="v {"lead" if lead == 1 else ""}"><span>{fmt_cat(shown_a, cat.name)}</span></div>{proj(pa)}</div>'
+            f'<div class="c"><div class="cn">{cat.name}</div>{ui.diverging(p)}<div class="p">{pct(p)}</div></div>'
+            f'<div class="r"><div class="v r {"lead" if lead == 0 else ""}"><span>{fmt_cat(shown_b, cat.name)}</span></div>'
             f'<div class="proj" style="text-align:right">{"proj " + fmt_cat(pb, cat.name) if started else ""}</div></div>'
             "</div>")
     html.append("</div>")
