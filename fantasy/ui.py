@@ -271,6 +271,29 @@ button[kind], [data-testid="stPopover"] button { min-height:44px; }
 .lu .i .b { font-size:14px; color:var(--label2); margin-top:2px; line-height:19px; }
 .lu .ok { font-size:14px; color:var(--label2); padding:0 0 10px; }
 
+/* ---------- leaders: rank grid ---------- */
+.rg { background:var(--card); border-radius:20px; padding:10px 8px 8px; border:.5px solid var(--edge); box-shadow:var(--shadow); }
+.rg table { width:100%; border-collapse:separate; border-spacing:3px; table-layout:fixed; }
+.rg th { font-size:10px; font-weight:800; letter-spacing:.2px; color:var(--label2); padding:2px 0 4px; text-align:center; }
+.rg th.tm { width:40px; }
+.rg td { height:32px; border-radius:8px; text-align:center; font-size:14px; font-weight:750;
+  font-variant-numeric:tabular-nums; color:var(--label); }
+.rg td.tm { background:none; padding:0; }
+.rg td.tm .tl { width:30px; height:30px; font-size:11px; margin:0 auto; }
+.rg tr.me td.tm .tl { box-shadow:0 0 0 2px var(--blue); }
+.rg tr.me td:not(.tm) { outline:1.5px solid color-mix(in srgb, var(--blue) 55%, transparent); outline-offset:-1.5px; }
+.rg .t1 { background:color-mix(in srgb, var(--green) 42%, transparent); }
+.rg .t2 { background:color-mix(in srgb, var(--green) 20%, transparent); }
+.rg .t3 { background:var(--fill2); color:var(--label2); }
+.rg .t4 { background:color-mix(in srgb, var(--red) 18%, transparent); }
+.rg .t5 { background:color-mix(in srgb, var(--red) 38%, transparent); }
+.rg .key { display:flex; justify-content:center; gap:12px; font-size:11px; color:var(--label2); margin-top:6px; }
+.rg .key i { display:inline-block; width:10px; height:10px; border-radius:3px; margin-right:4px; vertical-align:-1px; }
+.mv-up { color:var(--green); font-weight:700; } .mv-dn { color:var(--red); font-weight:700; } .mv-eq { color:var(--label3); }
+.bar1 { height:5px; border-radius:3px; background:var(--fill2); margin-top:7px; overflow:hidden; }
+.bar1 > span { display:block; height:100%; border-radius:3px; background:var(--blue); }
+.bar1.me > span { background:var(--orange); }
+
 /* native widgets: soften to match, 44pt rows for radio lists */
 [data-testid="stRadioGroup"] { gap:0 !important; width:100%; }
 [data-testid="stRadioGroup"] > div { width:100%; }
@@ -508,6 +531,35 @@ def lineup_card(issues, today_label: str) -> str:
     n = len(issues)
     return (f'<div class="lu"><div class="t"><span class="dot"></span>{n} lineup fix{"es" if n != 1 else ""} · '
             f'{e(today_label)}</div>{rows}</div>')
+
+
+def rank_grid(rank_df, logo_fn, me: str | None, n_teams: int) -> str:
+    """Teams x categories, each cell the team's league rank, colored top to bottom."""
+    def tier(r):
+        f = (r - 1) / max(n_teams - 1, 1)
+        return "t1" if f < 0.2 else "t2" if f < 0.4 else "t3" if f <= 0.6 else "t4" if f <= 0.8 else "t5"
+    head = '<tr><th class="tm"></th>' + "".join(f"<th>{e(c)}</th>" for c in rank_df.columns) + "</tr>"
+    order = rank_df.astype(float).mean(axis=1).sort_values().index
+    body = []
+    for k in order:
+        cells = "".join(f'<td class="{tier(int(v))}">{int(v)}</td>' if v == v and v is not None else "<td>–</td>"
+                        for v in rank_df.loc[k])
+        body.append(f'<tr class="{"me" if k == me else ""}"><td class="tm">{logo_fn(k)}</td>{cells}</tr>')
+    key = ('<div class="key"><span><i style="background:color-mix(in srgb,var(--green) 42%,transparent)"></i>Top</span>'
+           '<span><i style="background:var(--fill2)"></i>Middle</span>'
+           '<span><i style="background:color-mix(in srgb,var(--red) 38%,transparent)"></i>Bottom</span></div>')
+    return f'<div class="rg"><table>{head}{"".join(body)}</table>{key}</div>'
+
+
+def move(prev, now) -> str:
+    if prev is None or now is None or prev != prev or now != now:
+        return ""
+    d = int(prev) - int(now)
+    if d > 0:
+        return f'<span class="mv-up">▲{d}</span>'
+    if d < 0:
+        return f'<span class="mv-dn">▼{-d}</span>'
+    return '<span class="mv-eq">–</span>'
 
 
 def group(rows: list[str]) -> None:

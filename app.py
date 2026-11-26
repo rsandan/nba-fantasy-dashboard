@@ -17,7 +17,9 @@ import pandas as pd
 import streamlit as st
 
 from fantasy import matchup_model as mm
-from fantasy import hub, insights, nba_data, power, trade
+import altair as alt
+
+from fantasy import hub, insights, leaders, nba_data, power, trade
 from fantasy import ui
 from fantasy.categories import BY_NAME, CATEGORIES, CATEGORY_NAMES, category_value, compare
 from fantasy.data_source import connect
@@ -487,7 +489,7 @@ def page_standings():
         ui.footnote("Standings show up after the first week is complete.")
         return
 
-    view = st.segmented_control("View", ["Standings", "Power", "Playoffs"], default="Standings",
+    view = st.segmented_control("View", ["Standings", "Power", "Leaders"], default="Standings",
                                 required=True, label_visibility="collapsed", key="stand_view",
                                 width="stretch")
     t = summ.set_index("team_key")
@@ -519,23 +521,117 @@ def page_standings():
                     "week, from the matchup model. It ignores the schedule. <b>Form</b> weights recent weeks.")
 
     else:
-        future = load_future_weeks(KEY, META.current_week + 1, META.playoff_start_week - 1) \
-            if not SOURCE.is_demo else tw[tw["status"] == "preevent"]
-        live = tw[tw["week"] == META.current_week]
-        fut = pd.concat([live, future], ignore_index=True) if not future.empty else live
-        odds = season_sim(model, tw, fut, c["sig"]).set_index("team_key")
-        order = odds["playoff_odds"].sort_values(ascending=False).index
-        rows = []
-        for i, k in enumerate(order, 1):
-            if i == META.num_playoff_teams + 1:
-                rows.append('<div class="cut">Playoff line</div>')
-            rows.append(ui.row(e(NAMES.get(k, k)),
-                               f"Proj. {odds.at[k, 'exp_win_pct']:.3f}".replace("0.", ".") + f" · #1 seed {pct(odds.at[k, 'top_seed_odds'])}",
-                               pct(odds.at[k, "playoff_odds"]), lead=ui.rank(i) + logo(k), me=k == me,
-                               extra=ui.mini_bar(odds.at[k, "playoff_odds"])))
-        ui.group(rows)
-        ui.footnote(f"The rest of the season played out 2,000 times on the real schedule. "
-                    f"Top {META.num_playoff_teams} make it; exact ties are broken at random.")
+        _leaders(tw, me)
+
+
+CHART_COLORS = ["#0a84ff", "#ff9f0a", "#30d158", "#bf5af2"]
+
+
+def _leaders(tw: pd.DataFrame, me: str | None):
+    scope = st.segmented_control("Scope", ["This week", "Season average"], default="This week", required=True,
+                                 label_visibility="collapsed", key="lead_scope", width="stretch")
+    wk = META.current_week
+    done_weeks = sorted(tw.loc[tw["status"] == "postevent", "week"].unique())
+    if scope == "This week":
+        vals = leaders.week_table(tw, wk)
+        shown_wk = wk
+        if vals.empty and done_weeks:                       # week hasn't started: show the last one
+            shown_wk = done_weeks[-1]
+            vals = leaders.week_table(tw, shown_wk)
+        prev = leaders.previous_ranks(tw, shown_wk)
+        live_now = shown_wk == wk and (tw.loc[tw["week"] == wk, "status"] == "midevent").any()
+        wk_rows = tw[tw["week"] == shown_wk].set_index("team_key")
+        games = wk_rows["games"] if "games" in wk_rows else pd.Series(dtype=float)
+        note = (f"Week {shown_wk} totals so far, still live. Arrows compare to final ranks in week {shown_wk - 1}."
+                if live_now else f"Week {shown_wk} final totals. Arrows compare to week {shown_wk - 1}.")
+    else:
+        vals = leaders.season_table(tw)
+        prev = leaders.ranks(leaders.season_table(tw[tw["week"] < done_weeks[-1]])) if len(done_weeks) > 1 \
+            else pd.DataFrame()
+        games = pd.Series(dtype=float)
+        note = (f"Average week across {len(done_weeks)} completed week{'s' if len(done_weeks) != 1 else ''}; "
+                "percentages from season makes and attempts. Arrows show movement since last week.")
+    if vals.empty:
+        ui.footnote("Leaderboards show up once the first week is underway.")
+        return
+    rk = leaders.ranks(vals)
+
+    ui.section("Category ranks")
+    st.html(ui.rank_grid(rk, logo, me, len(rk)))
+    ui.footnote("Each cell is that team's rank in the category, best first. Teams are sorted by average rank"
+                + ("; your row is outlined." if me else "."))
+
+    if "lead_cat" not in st.session_state:
+        st.session_state["lead_cat"] = "PTS"
+    cat = st.pills("Category", CATEGORY_NAMES, key="lead_cat", label_visibility="collapsed") or "PTS"
+    lower = "" if BY_NAME[cat].higher_is_better else " (fewest is best)"
+    ui.section(f"{cat} leaders{lower}")
+    avg = float(vals[cat].mean())
+    share = leaders.bar_share(vals[cat], cat)
+    rows = []
+    for k in rk[cat].sort_values().index:
+        txt, better = leaders.vs_average(vals.at[k, cat], avg, cat)
+        cls = "mv-up" if better else "mv-dn" if better is False else ""
+        p_rank = prev.at[k, cat] if not prev.empty and k in prev.index and cat in prev else None
+        bar = (f'<div class="bar1{" me" if k == me else ""}">'
+               f'<span style="width:{float(share.get(k, 0) or 0) * 100:.0f}%"></span></div>')
+        g = games.get(k) if not games.empty else None
+        gp = f' · {int(g)} games' if g is not None and g == g else ""
+        rows.append(ui.row(e(NAMES.get(k, k)), f'<span class="{cls}">{e(txt)}</span>{gp}', fmt_cat(vals.at[k, cat], cat),
+                           ui.move(p_rank, rk.at[k, cat]), lead=ui.rank(int(rk.at[k, cat])) + logo(k),
+                           me=k == me, extra=bar))
+    ui.group(rows)
+    ui.footnote(f"{note} League average: {fmt_cat(avg, cat)}.")
+
+    _trend_chart(tw, cat, me, rk)
+
+
+def _trend_chart(tw: pd.DataFrame, cat: str, me: str | None, rk: pd.DataFrame):
+    tr = leaders.trend(tw, cat)
+    ui.section(f"{cat} week by week")
+    if tr.empty or tr["week"].nunique() < 2:
+        ui.footnote("Trends show up after two completed weeks.")
+        return
+    live = tw[(tw["week"] == META.current_week)]
+    defaults = []
+    if me:
+        defaults.append(me)
+        opp = live.loc[live["team_key"] == me, "opponent_key"]
+        if not opp.empty and opp.iloc[0] in NAMES:
+            defaults.append(opp.iloc[0])
+    season_rk = leaders.ranks(leaders.season_table(tw))
+    if cat in season_rk:
+        leader = season_rk[cat].sort_values().index[0]
+        if leader not in defaults:
+            defaults.append(leader)
+    pick = st.multiselect("Compare", list(NAMES), default=defaults[:3], format_func=lambda k: NAMES.get(k, k),
+                          max_selections=4, key=f"lead_cmp", label_visibility="collapsed",
+                          placeholder="Pick teams to compare")
+    avg = tr.groupby("week", as_index=False)["value"].mean().assign(team="League avg")
+    sel = tr[tr["team_key"].isin(pick)].assign(team=lambda d: d["team_key"].map(NAMES))
+    order = [NAMES[k] for k in pick]
+    colors = CHART_COLORS[:len(order)]
+    pct_cat = BY_NAME[cat].kind == "pct"
+    fmt = ".3f" if pct_cat else ",.0f"
+    y = alt.Y("value:Q", title=None, scale=alt.Scale(zero=False, reverse=not BY_NAME[cat].higher_is_better),
+              axis=alt.Axis(format=fmt, grid=True, gridOpacity=0.15, labelFontSize=11, tickCount=5))
+    x = alt.X("week:O", title="Week", axis=alt.Axis(labelAngle=0, labelFontSize=11, titleFontSize=11))
+    base_avg = alt.Chart(avg).mark_line(strokeDash=[4, 4], strokeWidth=1.5, color="#8e8e93").encode(
+        x=x, y=y, tooltip=[alt.Tooltip("week:O", title="Week"), alt.Tooltip("value:Q", title="League avg", format=fmt)])
+    lines = alt.Chart(sel).mark_line(strokeWidth=2.5, interpolate="monotone",
+                                     point=alt.OverlayMarkDef(size=45, filled=True)).encode(
+        x=x, y=y,
+        color=alt.Color("team:N", scale=alt.Scale(domain=order, range=colors),
+                        legend=alt.Legend(orient="bottom", title=None, labelFontSize=12, symbolSize=80,
+                                          columns=2, labelLimit=180)),
+        tooltip=[alt.Tooltip("team:N", title="Team"), alt.Tooltip("week:O", title="Week"),
+                 alt.Tooltip("value:Q", title=cat, format=fmt)])
+    chart = (base_avg + lines).properties(height=260).configure_view(strokeWidth=0).configure(
+        background="transparent")
+    st.altair_chart(chart, width="stretch", theme="streamlit")
+    flip = "" if BY_NAME[cat].higher_is_better else " The axis is flipped so up is always better."
+    ui.footnote(f"Completed weeks only, so a half-finished week doesn't read as a slump. Dashed line is the "
+                f"league average.{flip} Add up to 4 teams to compare.")
 
 
 WINDOWS = {"Blended": ("blend", 0), "This season": ("cur", 0), "Last 2 weeks": ("cur", 14),
