@@ -14,9 +14,10 @@ MESSAGES = ["Connecting to Yahoo…", "Checking the waiver wire…", "Running 4,
             "Scouting your opponent…", "Grading every trade…"]
 VARIANTS = ("bounce", "scoreboard", "swish")
 
-_BALL = ('<svg viewBox="0 0 44 44" aria-hidden="true"><circle cx="22" cy="22" r="21" fill="#ff9f0a" '
-         'stroke="#7a3a00" stroke-width="1.8"/><path d="M1 22h42M22 1v42M7 7c8 8 8 22 0 30M37 7c-8 8-8 22 0 30" '
-         'fill="none" stroke="#7a3a00" stroke-width="1.8"/></svg>')
+# Drawn with plain CSS, not an inline SVG: iOS Safari can skip painting an inline SVG that sits
+# inside an element with a running transform animation, which left the bounce splash with
+# only its shadow on iPhones.
+_BALL = '<div class="bb" aria-hidden="true"></div>'
 
 CSS = """<style>
 .spl{position:fixed;inset:0;z-index:100000;background:#000;color:#fff;display:flex;flex-direction:column;
@@ -29,7 +30,13 @@ CSS = """<style>
 .spl .msg span:nth-child(4){animation-delay:6.6s}.spl .msg span:nth-child(5){animation-delay:8.8s}
 @keyframes spl-msg{0%{opacity:0;transform:translateY(4px)}3%,17%{opacity:1;transform:none}20%,100%{opacity:0}}
 .spl .ball{width:52px;height:52px;animation:spl-bounce 1.1s cubic-bezier(.45,0,.55,1) infinite}
-.spl .ball svg{width:100%;height:100%;animation:spl-spin 2.2s linear infinite}
+.spl .bb{position:relative;width:100%;height:100%;box-sizing:border-box;border-radius:50%;overflow:hidden;
+ border:2px solid #7a3a00;background:linear-gradient(#7a3a00,#7a3a00) center/100% 2px no-repeat,
+ linear-gradient(#7a3a00,#7a3a00) center/2px 100% no-repeat,#ff9f0a;-webkit-transform:translateZ(0)}
+.spl .bb::before,.spl .bb::after{content:"";position:absolute;top:-12%;width:64%;height:124%;
+ box-sizing:border-box;border:2px solid #7a3a00;border-radius:50%}
+.spl .bb::before{left:-40%}.spl .bb::after{right:-40%}
+.spl .ball .bb{animation:spl-spin 2.2s linear infinite}
 .spl .shadow{width:48px;height:9px;border-radius:50%;background:#ff9f0a;margin-top:4px;
  animation:spl-shadow 1.1s cubic-bezier(.45,0,.55,1) infinite}
 @keyframes spl-bounce{0%,100%{transform:translateY(0) scale(1.15,.85)}12%{transform:translateY(-6px)}
@@ -59,7 +66,7 @@ CSS = """<style>
 .spl .court{width:240px;height:130px;position:relative}
 .spl .shot{position:absolute;left:0;top:0;width:32px;height:32px;
  animation:spl-arc 1.8s cubic-bezier(.3,.1,.5,1) infinite alternate}
-.spl .shot svg{width:100%;height:100%}
+
 @keyframes spl-arc{0%{transform:translate(0,96px)}50%{transform:translate(92px,-8px) scale(.92)}
  82%{transform:translate(176px,24px) scale(.8)}100%{transform:translate(176px,76px) scale(.8);opacity:0}}
 .spl .net{animation:spl-sway 1.8s ease infinite alternate;transform-origin:top;transform-box:fill-box}
