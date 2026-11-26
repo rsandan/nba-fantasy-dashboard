@@ -500,7 +500,8 @@ def wire_stories(tx: pd.DataFrame, names: dict, pidx: dict, now: pd.Timestamp,
 
 
 def league_feed(sims, live, tw, tx, names, ap_summary, head: bool, values: pd.DataFrame | None,
-                now: pd.Timestamp) -> dict:
+                now: pd.Timestamp, cat_rates: pd.DataFrame | None = None,
+                rosters: pd.DataFrame | None = None) -> dict:
     """Everything the home page shows: top story, matchup stories, wire and league notes."""
     pidx = player_index(values)
     ranks = _ranks(ap_summary, head)
@@ -523,6 +524,164 @@ def league_feed(sims, live, tw, tx, names, ap_summary, head: bool, values: pd.Da
     wire = uniq
     pool = m + wire + league
     top = max(pool, key=lambda s: s.score) if pool else None
+    report = team_report(names, tx, pidx, now, win_odds, tw, cat_rates, rosters)
+    order = {k: i for i, k in enumerate(sorted(ranks, key=ranks.get))} if ranks else {}
+    report.sort(key=lambda n: order.get(n.team_key, 99))
     return dict(top=top, matchups=sorted(m, key=lambda s: -s.score),
                 wire=sorted([s for s in wire + league if s is not top], key=lambda s: -s.score),
-                ranks=ranks)
+                report=report, ranks=ranks)
+
+
+# ======================================================================= team report
+@dataclass
+class TeamNote:
+    team_key: str
+    good: str
+    bad: str
+
+
+def _streaks(tw: pd.DataFrame) -> dict:
+    """team -> (result, length) for the current run of completed-week results."""
+    done = tw[tw["status"] == "postevent"]
+    res = {}
+    for (wk, _), g in done.groupby(["week", "matchup_id"]):
+        if len(g) != 2:
+            continue
+        a, b = g.iloc[0], g.iloc[1]
+        w, l, _t = _banked(a, b)
+        res.setdefault(a["team_key"], []).append((wk, "W" if w > l else "L" if l > w else "T"))
+        res.setdefault(b["team_key"], []).append((wk, "W" if l > w else "L" if w > l else "T"))
+    out = {}
+    for team, seq in res.items():
+        seq = [r for _, r in sorted(seq)]
+        n = 0
+        for r in reversed(seq):
+            if r != seq[-1]:
+                break
+            n += 1
+        out[team] = (seq[-1], n)
+    return out
+
+
+def team_report(names: dict, tx: pd.DataFrame, pidx: dict, now: pd.Timestamp, win_odds: dict,
+                tw: pd.DataFrame, cat_rates: pd.DataFrame | None, rosters: pd.DataFrame | None,
+                days: int = 14) -> list[TeamNote]:
+    """One good and one bad thing for every team, most notable first.
+
+    Candidates come from the last two weeks of transactions, streaks, this week's odds
+    and injuries; each carries a score so the strongest signal wins. Every team falls
+    back to its best and worst category, so no cell is ever empty.
+    """
+    good = {k: [] for k in names}
+    bad = {k: [] for k in names}
+    info = lambda n: pidx.get(normalize_name(n)) if isinstance(n, str) else None
+
+    # Streaks
+    for t, (r, n) in _streaks(tw).items():
+        if t not in names:
+            continue
+        if r == "W" and n >= 2:
+            good[t].append((2 + n / 2, f"Won {n} straight weeks"))
+        elif r == "L" and n >= 2:
+            bad[t].append((2 + n / 2, f"Lost {n} straight weeks"))
+
+    # This week's odds
+    for t, p in (win_odds or {}).items():
+        if t not in names:
+            continue
+        if p >= 0.7:
+            good[t].append((1.5 + 2 * (p - 0.7), f"{p:.0%} to win this week"))
+        elif p <= 0.3:
+            bad[t].append((1.5 + 2 * (0.3 - p), f"Only {p:.0%} to win this week"))
+
+    if tx is not None and not tx.empty:
+        tx = tx[tx["timestamp"] <= now]
+        recent = tx[tx["timestamp"] >= now - pd.Timedelta(days=days)]
+        adds = recent[recent["action"] == "add"].sort_values("timestamp")
+        drops = recent[recent["action"] == "drop"].sort_values("timestamp")
+
+        # Trades: winner and loser by per-game value
+        for _, g in recent[recent["action"] == "trade"].groupby("transaction_id"):
+            sides = {k: grp["player_name"].tolist() for k, grp in g.groupby("team_key")}
+            if len(sides) != 2:
+                continue
+            (ta, pa), (tb, pb) = sides.items()
+            va = sum(info(n)[1] for n in pa if info(n))
+            vb = sum(info(n)[1] for n in pb if info(n))
+            win, lose, got, edge = (ta, tb, pa, va - vb) if va >= vb else (tb, ta, pb, vb - va)
+            if edge >= 0.4:
+                good[win].append((3.5, f"Won the {got[0]} trade (+{edge:.1f} value)"))
+                bad[lose].append((3.5, f"Lost the {got[0]} trade (−{edge:.1f} value)"))
+            else:
+                for t, p in ((ta, pa), (tb, pb)):
+                    good[t].append((1.2, f"Fair trade for {p[0]}"))
+
+        # Best pickup still held
+        dropped_after = set(zip(drops["team_key"], drops["player_name"]))
+        for t, grp in adds.groupby("team_key"):
+            held = [(info(n)[0], n) for n in grp["player_name"]
+                    if (t, n) not in dropped_after and info(n)]
+            if held:
+                rk, n = min(held)
+                if rk <= 150:
+                    good[t].append((2.5 + (150 - rk) / 100, f"Pickup {n} is now #{rk}"))
+
+        # Scooped someone else's drop
+        for _, d in drops.iterrows():
+            later = adds[(adds["player_name"] == d["player_name"]) & (adds["team_key"] != d["team_key"])
+                         & (adds["timestamp"] > d["timestamp"])
+                         & (adds["timestamp"] <= d["timestamp"] + pd.Timedelta(days=3))]
+            if not later.empty and later.iloc[0]["team_key"] in good:
+                i = info(d["player_name"])
+                bonus = 0.8 if i and i[0] <= 120 else 0
+                good[later.iloc[0]["team_key"]].append((2.2 + bonus, f"Scooped {d['player_name']} off waivers"))
+
+        # Regret: cut a top-120 player
+        for _, d in drops.iterrows():
+            i = info(d["player_name"])
+            if i and i[0] <= 120 and d["team_key"] in bad:
+                taken = adds[(adds["player_name"] == d["player_name"]) & (adds["timestamp"] > d["timestamp"])]
+                where = "now on another team" if not taken.empty else "still on waivers"
+                bad[d["team_key"]].append((2.4 + (120 - i[0]) / 100, f"Cut {d['player_name']} (#{i[0]}), {where}"))
+
+        # Activity
+        week = adds[adds["timestamp"] >= now - pd.Timedelta(days=7)]
+        cnt = week.groupby("team_key").size()
+        if not cnt.empty and cnt.max() >= 3:
+            t = cnt.idxmax()
+            if t in good:
+                good[t].append((1.4, f"{int(cnt.max())} adds this week, most in the league"))
+        active = set(recent["team_key"])
+        for t in names:
+            if t not in active:
+                bad[t].append((1.3 + (0.6 if win_odds and win_odds.get(t, 1) < 0.4 else 0), "No moves in two weeks"))
+
+    # Injuries on the roster
+    if rosters is not None and not rosters.empty and "status" in rosters:
+        from .trade import is_unavailable
+        hurt = rosters[rosters["status"].map(is_unavailable)]
+        if "selected_position" in hurt:
+            hurt = hurt[~hurt["selected_position"].isin({"IL", "IL+"})]
+        for t, grp in hurt.groupby("team_key"):
+            if t in bad and len(grp) >= 1:
+                n = len(grp)
+                who = grp["name"].iloc[0]
+                bad[t].append((1.6 + 0.4 * n, f"{who} out, not on IL" if n == 1 else f"{n} injured players taking roster spots"))
+
+    # Fallbacks: best and worst category from results
+    if cat_rates is not None and not cat_rates.empty:
+        rk = cat_rates.rank(ascending=False, method="min")
+        n = len(rk)
+        for t in names:
+            if t not in rk.index:
+                continue
+            best, worst = rk.loc[t].idxmin(), rk.loc[t].idxmax()
+            good[t].append((0.5, f"#{int(rk.at[t, best])} in the league in {best}"))
+            bad[t].append((0.5, f"#{int(rk.at[t, worst])} of {n} in {worst}"))
+
+    out = []
+    for t in names:
+        g = max(good[t], key=lambda x: x[0])[1] if good[t] else "Holding steady"
+        b = max(bad[t], key=lambda x: x[0])[1] if bad[t] else "Nothing glaring"
+        out.append(TeamNote(t, g, b))
+    return out

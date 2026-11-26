@@ -294,6 +294,22 @@ button[kind], [data-testid="stPopover"] button { min-height:44px; }
 .bar1 > span { display:block; height:100%; border-radius:3px; background:var(--blue); }
 .bar1.me > span { background:var(--orange); }
 
+/* ---------- wire report: one good, one bad per team ---------- */
+.tr { padding:12px 14px; border-top:.5px solid var(--sep); }
+.tr:first-child { border-top:none; }
+.tr .hd { display:flex; align-items:center; gap:10px; }
+.tr .hd .tl { width:30px; height:30px; font-size:11px; }
+.tr .hd .nm { font-size:15px; font-weight:700; color:var(--label); min-width:0; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+.tr.me .hd .nm::after { content:"YOU"; font-size:10px; font-weight:700; letter-spacing:.4px; color:var(--blue);
+  background:color-mix(in srgb, var(--blue) 14%, transparent); padding:2px 6px; border-radius:6px; margin-left:7px; vertical-align:2px; }
+.tr .gb { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:9px; }
+.tr .gb > div { border-radius:12px; padding:8px 10px; font-size:13px; line-height:17px; color:var(--label); }
+.tr .gb .g { background:color-mix(in srgb, var(--green) 13%, transparent); }
+.tr .gb .b { background:color-mix(in srgb, var(--red) 12%, transparent); }
+.tr .gb .k { display:block; font-size:10px; font-weight:800; letter-spacing:.6px; margin-bottom:2px; }
+.tr .gb .g .k { color:var(--green); } .tr .gb .b .k { color:var(--red); }
+
 /* native widgets: soften to match, 44pt rows for radio lists */
 [data-testid="stRadioGroup"] { gap:0 !important; width:100%; }
 [data-testid="stRadioGroup"] > div { width:100%; }
@@ -478,6 +494,17 @@ def plan_card(plan, my_name: str, opp_name: str, logo_html: str = "") -> str:
     return (f'<div class="plan"><div class="ph">{logo_html}<div><div class="t">{e(plan.headline)}</div>'
             f'<div class="s">Your game plan vs {e(opp_name)}</div></div>'
             f'<div class="odds" style="color:{color}">{pct(w)}</div></div>{"".join(acts)}</div>')
+
+
+def team_report(notes, names: dict, logo_fn, me: str | None) -> str:
+    notes = sorted(notes, key=lambda n: n.team_key != me)          # your team first
+    rows = []
+    for n in notes:
+        rows.append(f'<div class="tr{" me" if n.team_key == me else ""}"><div class="hd">{logo_fn(n.team_key)}'
+                    f'<div class="nm">{e(names.get(n.team_key, n.team_key))}</div></div>'
+                    f'<div class="gb"><div class="g"><span class="k">▲ GOOD</span>{e(n.good)}</div>'
+                    f'<div class="b"><span class="k">▼ BAD</span>{e(n.bad)}</div></div></div>')
+    return '<div class="list">' + "".join(rows) + "</div>"
 
 
 def wire_list(stories, logo_fn) -> str:

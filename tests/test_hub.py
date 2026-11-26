@@ -87,3 +87,15 @@ def test_two_stars_for_a_role_player_is_flagged_as_overpay(ctx):
     g = hub.market_value(vals, stars, ctx["vals"].replacement)
     t = hub.market_value(vals, role, ctx["vals"].replacement)
     assert hub.fairness(g, t)[1] == "You overpay"
+
+
+def test_team_report_gives_every_team_one_good_and_one_bad(ctx):
+    from fantasy import insights, power
+    lg = ctx["lg"]
+    tw = lg["team_weeks"]
+    live = tw[tw["status"] == "midevent"]
+    now = pd.Timestamp(live.iloc[0]["week_start"]).tz_localize("America/New_York") + pd.Timedelta(days=3)
+    notes = insights.team_report(ctx["names"], lg["transactions"], insights.player_index(ctx["vals"].table),
+                                 now, {}, tw, ctx["rates"], ctx["ros"])
+    assert {n.team_key for n in notes} == set(ctx["names"])
+    assert all(n.good and n.bad for n in notes)

@@ -197,9 +197,10 @@ def plan_for(_model: mm.TeamModel, me: str, live: pd.DataFrame, values: pd.DataF
 
 @st.cache_data(ttl=300, show_spinner="Writing the headlines…")
 def feed_for(_sims: list, live: pd.DataFrame, tw: pd.DataFrame, tx: pd.DataFrame, ap_summary: pd.DataFrame,
-             values: pd.DataFrame | None, now_key: str, model_sig: str) -> dict:
+             values: pd.DataFrame | None, now_key: str, model_sig: str,
+             cat_rates: pd.DataFrame | None = None, rosters: pd.DataFrame | None = None) -> dict:
     return insights.league_feed(_sims, live, tw, tx, NAMES, ap_summary, META.scoring_type == "head",
-                                values, pd.Timestamp(now_key))
+                                values, pd.Timestamp(now_key), cat_rates, rosters)
 
 
 def my_plan(c: dict, live: pd.DataFrame, me: str):
@@ -466,7 +467,7 @@ def page_home():
 
     feed = feed_for(sims, live, tw, load_transactions(KEY), c["ap"]["summary"],
                     c["vals"].table if c["vals"] is not None else None,
-                    now.floor("15min").isoformat(), c["sig"])
+                    now.floor("15min").isoformat(), c["sig"], c["ap"]["category_rates"], c["rosters"])
     if feed["top"] is not None:
         st.html(ui.story_card(feed["top"], logo, NAMES, top=True))
     rest = [s for s in feed["matchups"] if s is not feed["top"]]
@@ -474,9 +475,9 @@ def page_home():
         ui.section("Around the league")
         for s in rest:
             st.html(ui.story_card(s, logo, NAMES))
-    if feed["wire"]:
+    if feed.get("report"):
         ui.section("Wire report")
-        st.html(ui.wire_list(feed["wire"][:8], logo))
+        st.html(ui.team_report(feed["report"], NAMES, logo, me))
     ui.footnote(f"Updated {now:%-I:%M %p} ET. Odds come from 4,000 simulations of every matchup; "
                 "player rankings are per-game value in this league's nine categories.")
 
