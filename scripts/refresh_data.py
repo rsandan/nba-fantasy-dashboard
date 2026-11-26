@@ -43,8 +43,8 @@ def get_json(url: str, timeout: float = 20) -> dict | None:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             return json.loads(resp.read())
     except urllib.error.HTTPError as exc:
-        if exc.code not in (403, 404):
-            log.warning("%s -> HTTP %s", url, exc.code)
+        # 404 is normal for game ids past the end of the schedule; log the rest loudly.
+        (log.debug if exc.code == 404 else log.warning)("%s -> HTTP %s", url, exc.code)
         return None
     except Exception as exc:
         log.warning("%s -> %s", url, exc)
@@ -76,6 +76,7 @@ def write_csv(df: pd.DataFrame, path: Path) -> bool:
 def refresh_schedule(season: str, out: Path) -> pd.DataFrame:
     """Schedule with game ids and status. CDN first: it's fast and never blocked."""
     raw = get_json(snapshot.CDN_SCHEDULE)
+    log.info("CDN schedule: %s", "ok" if raw else "unavailable")
     sched = snapshot.parse_cdn_schedule(raw) if raw else pd.DataFrame()
     cdn_season = (raw or {}).get("leagueSchedule", {}).get("seasonYear")
     if not sched.empty and cdn_season and str(cdn_season)[:4] != season[:4]:
