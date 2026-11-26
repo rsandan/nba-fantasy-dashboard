@@ -32,10 +32,10 @@ import pandas as pd
 from . import matchup_model as mm
 from .categories import BY_NAME, CATEGORIES, CATEGORY_NAMES, category_value, compare
 from .nba_data import normalize_name
-from .trade import context_weights, streaming_board
+from .trade import QUESTIONABLE, context_weights, is_unavailable, streaming_board
 
 ADDITIVE = ["FGM", "FGA", "FTM", "FTA", "FG3M", "FG3A", "PTS", "REB", "AST", "STL", "BLK", "TOV"]
-INJURED = {"INJ", "O", "OUT", "IL", "IL+", "SUSP", "NA"}
+INJURED = {"INJ", "O", "OUT", "IL", "IL+", "SUSP", "NA", "NR"}
 BENCH_SLOTS = {"BN", "IL", "IL+", "NA"}
 CAT_PLAYERS = {"FG%": "efficient bigs", "FT%": "good free-throw shooters", "3PT%": "efficient shooters",
                "PTS": "scorers", "REB": "bigs", "AST": "playmakers", "STL": "wings and guards who gamble",
@@ -156,6 +156,8 @@ def game_plan(me: str, live: pd.DataFrame, model: mm.TeamModel, values: pd.DataF
             m = m[m["rank"] > 60]                                   # never suggest cutting a real asset
             if not m.empty:
                 m["games_left"] = m["TEAM"].map(games_left).fillna(0)
+                if "status" in m:   # an injured player's remaining games are worth nothing
+                    m.loc[m["status"].map(is_unavailable), "games_left"] = 0
                 m["score"] = _player_weighted(m, weights, replacement) * m["games_left"]
                 drops = m.sort_values("score").head(3)
                 stats = values.set_index("PLAYER_ID")
@@ -178,10 +180,15 @@ def game_plan(me: str, live: pd.DataFrame, model: mm.TeamModel, values: pd.DataF
                     gain, a, d, s = best
                     helps = [c for c in CATEGORY_NAMES if s.cat_prob[c] - p[c] >= 0.04]
                     helps_txt = f", and it moves {', '.join(helps[:3])}" if helps else ""
+                    d_hurt = is_unavailable(d.get("status"))
+                    d_txt = (f"{d['name']} is listed as out" if d_hurt
+                             else f"{d['name']}'s {int(d['games_left'])}")
+                    gtd = (f" {a['name']} is a game-time decision, so check his status first."
+                           if str(a.get("status", "")).upper() in QUESTIONABLE else "")
                     actions.append(Action(
                         "move", f"Add {a['name']}, drop {d['name']}",
                         f"{a['name']} has {int(a['games_left'])} game{'s' if a['games_left'] != 1 else ''} left "
-                        f"this week to {d['name']}'s {int(d['games_left'])}{helps_txt}.",
+                        f"this week{' while ' if d_hurt else ' to '}{d_txt}{helps_txt}.{gtd}",
                         f"{win(base):.0%} → {win(s):.0%}", 4 + 100 * gain, [a["PLAYER_ID"], d["PLAYER_ID"]]))
 
     # ---- 2. chase the most winnable category you're behind in

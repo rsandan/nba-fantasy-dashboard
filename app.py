@@ -570,8 +570,9 @@ def _pickups(c: dict, me: str | None, photos: bool):
     rows = []
     for _, p in board.head(n).iterrows():
         pos = str(p.get("eligible_positions", "")).replace(",", "/")
+        flag = " · GTD" if str(p.get("status", "")).upper() in trade.QUESTIONABLE else ""
         rows.append(ui.row(
-            e(p["name"]), e(f"{p.get('TEAM') or ''} · {pos} · {int(p['games_left'])} game{'s' if p['games_left'] != 1 else ''} left"),
+            e(p["name"]), e(f"{p.get('TEAM') or ''} · {pos} · {int(p['games_left'])} game{'s' if p['games_left'] != 1 else ''} left{flag}"),
             signed(p["stream_score"]), f"{signed(p['weighted_per_game'], 2)} /game",
             lead=ui.avatar(p["name"], p.get("PLAYER_ID"), photos),
             e1_class=ui.sign_class(p["stream_score"])))

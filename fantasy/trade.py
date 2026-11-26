@@ -26,6 +26,14 @@ from .categories import CATEGORY_NAMES
 from .nba_data import YAHOO_TO_NBA_TEAM, normalize_name
 from .valuation import Z_COLS, category_profile
 
+# Yahoo player status codes that mean "won't play": out, injured, on IL, suspended, not active.
+UNAVAILABLE = {"O", "OUT", "INJ", "IL", "IL+", "SUSP", "NA", "NR"}
+QUESTIONABLE = {"GTD", "DTD", "Q"}
+
+
+def is_unavailable(status) -> bool:
+    return isinstance(status, str) and status.strip().upper() in UNAVAILABLE
+
 
 def context_weights(cat_rates: pd.Series | None, punts=(), floor: float = 0.25) -> pd.Series:
     if cat_rates is None or cat_rates.empty:
@@ -103,6 +111,10 @@ def streaming_board(free_agents: pd.DataFrame, values: pd.DataFrame, games_left:
     """
     fa = match_players(free_agents, values)
     fa = fa.merge(values[["PLAYER_ID", "GP", "MIN", *Z_COLS, "value"]], on="PLAYER_ID", how="inner")
+    if "status" in fa:
+        # A player Yahoo lists as out or injured has no games to give this week, however
+        # good his per-game line is. Game-time decisions stay, flagged in the UI.
+        fa = fa[~fa["status"].map(is_unavailable)]
     team = fa["TEAM"].fillna(fa["nba_team"])
     fa["games_left"] = team.map(games_left).fillna(0).astype(int)
     repl = replacement if replacement is not None else pd.Series(0.0, index=CATEGORY_NAMES)

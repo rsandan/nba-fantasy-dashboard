@@ -302,3 +302,20 @@ def test_league_id_skips_user_lookup(monkeypatch):
 def test_league_key_is_used_verbatim(monkeypatch):
     h = _FakeHandler({})
     assert _discover(monkeypatch, h, YAHOO_LEAGUE_KEY="478.l.999") == "478.l.999"
+
+
+def test_streaming_board_never_recommends_injured_players(league):
+    players = nba_data.blend_seasons(league["players"], league["players_prior"])
+    vals = value_players(players, n_teams=10, roster_size=13)
+    fa = league["free_agents"].copy()
+    board = trade.streaming_board(fa, vals.table, pd.Series(3.0, index=demo.NBA_TEAMS),
+                                  pd.Series(1.0, index=CATEGORY_NAMES), vals.replacement)
+    star = board.iloc[0]["name"]
+    fa.loc[fa["name"] == star, "status"] = "O"
+    hurt = trade.streaming_board(fa, vals.table, pd.Series(3.0, index=demo.NBA_TEAMS),
+                                 pd.Series(1.0, index=CATEGORY_NAMES), vals.replacement)
+    assert star not in set(hurt["name"])
+    fa.loc[fa["name"] == star, "status"] = "GTD"          # questionable players stay, flagged
+    gtd = trade.streaming_board(fa, vals.table, pd.Series(3.0, index=demo.NBA_TEAMS),
+                                pd.Series(1.0, index=CATEGORY_NAMES), vals.replacement)
+    assert star in set(gtd["name"])

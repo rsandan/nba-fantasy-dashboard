@@ -47,7 +47,7 @@ input, textarea, select, [data-baseweb="select"] * { font-size:16px !important; 
 button[kind], [data-testid="stPopover"] button { min-height:44px; }
 
 .st-key-titlebar { flex-wrap:nowrap !important; align-items:flex-start !important; }
-.st-key-titlebar [data-testid="stPopover"] { margin-top:4px; }
+.st-key-titlebar [data-testid="stPopover"] { margin-top:4px; margin-right:10px; }
 .st-key-titlebar [data-testid="stPopover"] button [data-testid="stIconMaterial"] { font-size:30px; color:var(--blue); }
 .st-key-titlebar [data-testid="stPopover"] button > div > div:last-child:not(:first-child) { display:none; }
 
@@ -57,15 +57,23 @@ button[kind], [data-testid="stPopover"] button { min-height:44px; }
   -webkit-backdrop-filter:saturate(180%) blur(24px); backdrop-filter:saturate(180%) blur(24px);
   border:.5px solid var(--edge); border-radius:30px; box-shadow:0 10px 30px rgba(0,0,0,.18);
   padding:5px !important; justify-content:space-around !important; flex-wrap:nowrap !important; gap:0 !important; }
-.st-key-tabbar > div { flex:1 1 0 !important; min-width:0 !important; width:auto !important; }
-.st-key-tabbar a[data-testid="stPageLink-NavLink"] { flex-direction:column; gap:1px; padding:4px 0 2px;
-  width:100%; justify-content:center; align-items:center; background:transparent !important;
-  color:var(--tab) !important; min-height:50px; border-radius:24px; transition:background .2s, color .2s; }
+.st-key-tabbar > div { flex:1 1 0 !important; min-width:0 !important; width:auto !important;
+  display:flex !important; justify-content:center; }
+.st-key-tabbar [data-testid="stElementContainer"], .st-key-tabbar .stPageLink,
+.st-key-tabbar .stPageLink > div { width:100% !important; margin:0 !important; }
+.st-key-tabbar a[data-testid="stPageLink-NavLink"] { display:flex; flex-direction:column; align-items:center;
+  justify-content:center; gap:4px; width:100%; min-height:52px; padding:7px 0 5px; margin:0;
+  background:transparent !important; color:var(--tab) !important; border-radius:24px; transition:color .2s; }
 .st-key-tabbar a[data-testid="stPageLink-NavLink"]:hover { background:transparent !important; }
-.st-key-tabbar a[data-testid="stPageLink-NavLink"] span[data-testid="stIconMaterial"] { font-size:26px;
-  margin:0 !important; color:inherit !important; }
-.st-key-tabbar a[data-testid="stPageLink-NavLink"] p { font-size:10px !important; font-weight:500;
-  letter-spacing:.1px; color:inherit !important; line-height:1.2; margin:0; }
+.st-key-tabbar a[data-testid="stPageLink-NavLink"] > span { display:flex; align-items:center; justify-content:center;
+  margin:0 !important; padding:0 !important; line-height:1; }
+.st-key-tabbar a[data-testid="stPageLink-NavLink"] span[data-testid="stIconMaterial"] { font-size:24px; width:24px;
+  height:24px; line-height:24px; margin:0 !important; color:inherit !important; }
+.st-key-tabbar a[data-testid="stPageLink-NavLink"] [data-testid="stMarkdownContainer"],
+.st-key-tabbar a[data-testid="stPageLink-NavLink"] > span:last-child { width:auto; color:inherit !important; }
+.st-key-tabbar a[data-testid="stPageLink-NavLink"] > span:last-child { margin-top:4px !important; }
+.st-key-tabbar a[data-testid="stPageLink-NavLink"] p { font-size:10.5px !important; font-weight:600; letter-spacing:0;
+  line-height:12px; color:inherit !important; margin:0; text-align:center; white-space:nowrap; }
 .st-key-tabbar .tab-active a[data-testid="stPageLink-NavLink"],
 .st-key-tabbar a[data-testid="stPageLink-NavLink"][aria-current="page"] { color:var(--blue) !important; }
 
