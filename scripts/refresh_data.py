@@ -97,6 +97,9 @@ def season_per_game(season: str, use_stats: bool) -> tuple[pd.DataFrame, str]:
 def update_history(season: str, per_game: pd.DataFrame, out: Path, today: date) -> pd.DataFrame:
     path = out / f"history_{season}.csv.gz"
     hist = pd.read_csv(path) if path.exists() else pd.DataFrame()
+    if not hist.empty and not set(snapshot.TOTAL_COLS) <= set(hist.columns):
+        log.info("history_%s predates a stat column; starting it over", season)
+        hist = pd.DataFrame()
     snap = snapshot.to_totals(per_game, today)
     if not hist.empty:
         hist = hist[hist["as_of"] != snap["as_of"].iloc[0]]     # one snapshot per day
@@ -167,7 +170,7 @@ def main() -> int:
             write_csv(df, out / snapshot.players_file(season, days))
 
     prior_path = out / snapshot.players_file(prior, 0)
-    if prior_path.exists():
+    if prior_path.exists() and set(nba_data.STAT_COLS) <= set(pd.read_csv(prior_path, nrows=1).columns):
         log.info("%s already present; last season doesn't change", prior_path.name)
     else:
         time.sleep(4)   # be polite to Basketball-Reference between page loads

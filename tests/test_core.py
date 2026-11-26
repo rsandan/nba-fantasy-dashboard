@@ -111,7 +111,7 @@ def test_blend_weights_follow_games_played(league):
 
 # ------------------------------------------------------------------- valuation
 def _toy_players():
-    base = dict(GP=60, TEAM="BOS", MIN=30, FTM=3, FTA=4, FG3M=2, PTS=20, REB=6, AST=4, STL=1, BLK=1, TOV=2)
+    base = dict(GP=60, TEAM="BOS", MIN=30, FTM=3, FTA=4, FG3M=2, FG3A=5, PTS=20, REB=6, AST=4, STL=1, BLK=1, TOV=2)
     rows = [dict(PLAYER_ID=i, PLAYER_NAME=f"P{i}", FGM=5, FGA=10, **base) for i in range(40)]
     rows.append(dict(PLAYER_ID=100, PLAYER_NAME="Low volume 60%", FGM=1.8, FGA=3, **base))
     rows.append(dict(PLAYER_ID=101, PLAYER_NAME="High volume 55%", FGM=11, FGA=20, **base))
@@ -153,8 +153,8 @@ def test_identical_teams_are_coin_flips(league):
 def test_banked_week_is_deterministic(league):
     model = mm.fit_team_model(league["team_weeks"])
     a, b = model.teams()[:2]
-    big = dict(FGM=500, FGA=900, FTM=200, FTA=220, FG3M=150, PTS=1350, REB=600, AST=350, STL=120, BLK=80, TOV=40)
-    small = dict(FGM=300, FGA=800, FTM=100, FTA=200, FG3M=50, PTS=750, REB=300, AST=150, STL=40, BLK=20, TOV=120)
+    big = dict(FGM=500, FGA=900, FTM=200, FTA=220, FG3M=150, FG3A=400, PTS=1350, REB=600, AST=350, STL=120, BLK=80, TOV=40)
+    small = dict(FGM=300, FGA=800, FTM=100, FTA=200, FG3M=50, FG3A=180, PTS=750, REB=300, AST=150, STL=40, BLK=20, TOV=120)
     sim = mm.simulate_matchup(model, a, b, big, small, games_a=0, games_b=0, n_sims=500)
     assert sim.p_win == 1.0 and (sim.cat_prob == 1.0).all()
 

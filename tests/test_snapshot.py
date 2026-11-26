@@ -70,7 +70,7 @@ def test_aggregate_output_feeds_valuation():
         for g in range(5):
             rows.append(dict(game_id=f"g{g}", game_date="2026-10-2%d" % g, PLAYER_ID=pid,
                              PLAYER_NAME=f"P{pid}", TEAM="OKC", MIN=20 + pid % 15,
-                             FGM=3 + pid % 5, FGA=8 + pid % 7, FTM=2, FTA=3, FG3M=pid % 3,
+                             FGM=3 + pid % 5, FGA=8 + pid % 7, FTM=2, FTA=3, FG3M=pid % 3, FG3A=3 + pid % 4,
                              PTS=10 + pid % 20, REB=pid % 9, AST=pid % 7, STL=1, BLK=pid % 2, TOV=2))
     per_game = nba_data.standardize_player_frame(snapshot.aggregate_per_game(pd.DataFrame(rows)))
     res = value_players(per_game, n_teams=8, roster_size=13)
@@ -87,7 +87,7 @@ def test_read_falls_back_to_local_then_empty(tmp_path, monkeypatch):
     monkeypatch.setattr(snapshot, "LOCAL_DIR", tmp_path)
     assert snapshot.load_players("2026-27").empty
     pd.DataFrame([dict(PLAYER_ID=1, PLAYER_NAME="A B", TEAM="OKC", GP=3, MIN=30, FGM=5, FGA=10,
-                       FTM=2, FTA=2, FG3M=1, PTS=13, REB=4, AST=3, STL=1, BLK=0, TOV=2)]
+                       FTM=2, FTA=2, FG3M=1, FG3A=3, PTS=13, REB=4, AST=3, STL=1, BLK=0, TOV=2)]
                  ).to_csv(tmp_path / snapshot.players_file("2026-27"), index=False)
     df = snapshot.load_players("2026-27")
     assert len(df) == 1 and df.loc[0, "name_key"] == "a b"
@@ -150,7 +150,7 @@ def test_espn_scoreboard_maps_team_codes():
 
 def test_window_from_history_diffs_cumulative_totals():
     day1 = pd.DataFrame([dict(PLAYER_ID=1, PLAYER_NAME="A", TEAM="OKC", GP=10, MIN=30, FGM=5, FGA=10,
-                              FTM=2, FTA=2, FG3M=1, PTS=20, REB=5, AST=5, STL=1, BLK=1, TOV=2)])
+                              FTM=2, FTA=2, FG3M=1, FG3A=3, PTS=20, REB=5, AST=5, STL=1, BLK=1, TOV=2)])
     day15 = day1.assign(GP=14, PTS=(20 * 10 + 40 * 4) / 14)       # 4 new games at 40 ppg
     hist = pd.concat([snapshot.to_totals(day1, "2026-11-10"), snapshot.to_totals(day15, "2026-11-25")])
     w = snapshot.window_from_history(hist, "2026-11-25", 14)

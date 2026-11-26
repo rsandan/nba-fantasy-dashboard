@@ -44,11 +44,11 @@ def _team_keys(n=10):
 
 def _latent_rates(rng, n):
     """Per player-game latent rates with archetypes (e.g. big-man builds punt FT%)."""
-    base = dict(FGA=8.4, FGP=0.475, FTA=2.4, FTP=0.785, FG3M=1.35, PTS=11.8, REB=4.6, AST=2.8,
+    base = dict(FGA=8.4, FGP=0.475, FTA=2.4, FTP=0.785, FG3A=3.8, FG3P=0.355, PTS=11.8, REB=4.6, AST=2.8,
                 STL=0.85, BLK=0.55, TOV=1.45)
     rows = []
     for i in range(n):
-        big = rng.uniform(-1, 1)          # + = bigs (REB/BLK/FG%), - = guards (AST/3PTM/FT%)
+        big = rng.uniform(-1, 1)          # + = bigs (REB/BLK/FG%), - = guards (AST/3PT%/FT%)
         vol = rng.normal(0, 0.06)         # overall quality
         r = {k: v * (1 + vol) for k, v in base.items()}
         r["REB"] *= 1 + 0.14 * big
@@ -56,10 +56,11 @@ def _latent_rates(rng, n):
         r["FGP"] = base["FGP"] + 0.018 * big + rng.normal(0, 0.006)
         r["FTP"] = base["FTP"] - 0.035 * big + rng.normal(0, 0.01)
         r["AST"] *= 1 - 0.18 * big
-        r["FG3M"] *= 1 - 0.22 * big
+        r["FG3A"] *= 1 - 0.22 * big
+        r["FG3P"] = base["FG3P"] - 0.012 * big + rng.normal(0, 0.008)
         r["STL"] *= 1 + rng.normal(0, 0.06)
         r["TOV"] *= 1 - 0.08 * big + rng.normal(0, 0.05)
-        r["PTS"] = r["FGA"] * r["FGP"] * 2 + r["FG3M"] + r["FTA"] * r["FTP"]
+        r["PTS"] = r["FGA"] * r["FGP"] * 2 + r["FG3A"] * r["FG3P"] + r["FTA"] * r["FTP"]
         rows.append(r)
     return pd.DataFrame(rows)
 
@@ -67,7 +68,7 @@ def _latent_rates(rng, n):
 def _latent_from_rosters(rng, rosters, players, keys):
     """Team per-game rates implied by the roster, rescaled to Yahoo's started-game level."""
     from .matchup_model import COMPONENTS, roster_priors
-    base = pd.Series(dict(FGA=8.4, FGP=0.475, FTA=2.4, FTP=0.785, FG3M=1.35, PTS=11.8, REB=4.6,
+    base = pd.Series(dict(FGA=8.4, FGP=0.475, FTA=2.4, FTP=0.785, FG3A=3.8, FG3P=0.355, PTS=11.8, REB=4.6,
                           AST=2.8, STL=0.85, BLK=0.55, TOV=1.45))
     from .nba_data import normalize_name
     ros = rosters.assign(name_key=rosters["name"].map(normalize_name)).merge(
@@ -79,7 +80,8 @@ def _latent_from_rosters(rng, rosters, players, keys):
         return latent
     latent = pri.reindex(keys).fillna(pri.mean())[COMPONENTS] * (base / pri.mean())[COMPONENTS]
     latent = latent * rng.normal(1, 0.02, latent.shape)       # coaching/streaming skill not in the roster
-    latent["PTS"] = 2 * latent["FGA"] * latent["FGP"] + latent["FG3M"] + latent["FTA"] * latent["FTP"]
+    latent["PTS"] = (2 * latent["FGA"] * latent["FGP"] + latent["FG3A"] * latent["FG3P"]
+                     + latent["FTA"] * latent["FTP"])
     return latent
 
 
@@ -88,8 +90,10 @@ def _week_totals(rng, rates: pd.Series, games: int) -> dict:
     fta = rng.poisson(rates["FTA"] * games)
     fgm = rng.binomial(fga, np.clip(rates["FGP"], 0, 1))
     ftm = rng.binomial(fta, np.clip(rates["FTP"], 0, 1))
-    fg3m = min(rng.poisson(rates["FG3M"] * games), fgm)
+    fg3a = min(rng.poisson(rates["FG3A"] * games), fga)
+    fg3m = min(rng.binomial(fg3a, np.clip(rates["FG3P"], 0, 1)), fgm)
     return dict(FGM=float(fgm), FGA=float(fga), FTM=float(ftm), FTA=float(fta), FG3M=float(fg3m),
+                FG3A=float(fg3a),
                 PTS=float(2 * fgm + fg3m + ftm), REB=float(rng.poisson(rates["REB"] * games)),
                 AST=float(rng.poisson(rates["AST"] * games)), STL=float(rng.poisson(rates["STL"] * games)),
                 BLK=float(rng.poisson(rates["BLK"] * games)), TOV=float(rng.poisson(rates["TOV"] * games)))
@@ -134,13 +138,14 @@ def make_league(seed: int = 42, n_teams: int = 10, completed_weeks: int = 9, tot
                 else:
                     played, remaining = 0, sched_games
                 totals = _week_totals(rng, latent.loc[team], played) if played else dict.fromkeys(
-                    ["FGM", "FGA", "FTM", "FTA", "FG3M", "PTS", "REB", "AST", "STL", "BLK", "TOV"], 0.0)
+                    ["FGM", "FGA", "FTM", "FTA", "FG3M", "FG3A", "PTS", "REB", "AST", "STL", "BLK", "TOV"], 0.0)
                 rows.append(dict(week=w, matchup_id=f"{w}-{mi}", team_key=team, team_name=names[team],
                                  opponent_key=opp, status=status, is_playoffs=False, is_consolation=False,
                                  week_start=ws.isoformat(), week_end=we.isoformat(), games=float(played),
                                  live_games=0.0, remaining_games=float(remaining), **totals,
                                  **{"FG%": totals["FGM"] / totals["FGA"] if totals["FGA"] else np.nan,
-                                    "FT%": totals["FTM"] / totals["FTA"] if totals["FTA"] else np.nan}))
+                                    "FT%": totals["FTM"] / totals["FTA"] if totals["FTA"] else np.nan,
+                                    "3PT%": totals["FG3M"] / totals["FG3A"] if totals["FG3A"] else np.nan}))
     team_weeks = pd.DataFrame(rows)[TEAM_WEEK_COLUMNS]
 
     current_week = completed_weeks + 1
@@ -174,11 +179,14 @@ def make_players(rng, n=420):
         fgp = np.clip(0.455 + 0.05 * big + rng.normal(0, 0.02 + noise / 4, len(q)), 0.35, 0.68)
         fta = np.clip(m * (1.5 + 5.5 * q) * (1 + rng.normal(0, noise, len(q))), 0.1, None)
         ftp = np.clip(0.78 - 0.08 * big + rng.normal(0, 0.04 + noise / 3, len(q)), 0.45, 0.94)
-        fg3m = np.clip(m * (1.2 + 2 * q) * (1 - 0.6 * big) * (1 + rng.normal(0, noise, len(q))), 0, None)
+        fg3a = np.clip(m * (3.4 + 5.5 * q) * (1 - 0.6 * big) * (1 + rng.normal(0, noise, len(q))), 0, None)
+        fg3a = np.minimum(fg3a, fga)
+        fg3p = np.clip(0.355 - 0.03 * big + rng.normal(0, 0.03 + noise / 4, len(q)), 0.2, 0.47)
+        fg3m = fg3a * fg3p
         fgm, ftm = fga * fgp, fta * ftp
         return pd.DataFrame({
             "MIN": minutes, "FGM": fgm, "FGA": fga, "FTM": ftm, "FTA": fta, "FG3M": np.minimum(fg3m, fgm),
-            "PTS": 2 * fgm + np.minimum(fg3m, fgm) + ftm,
+            "FG3A": fg3a, "PTS": 2 * fgm + np.minimum(fg3m, fgm) + ftm,
             "REB": np.clip(m * (4 + 4 * q) * (1 + 0.55 * big) * (1 + rng.normal(0, noise, len(q))), 0, None),
             "AST": np.clip(m * (2 + 5 * q) * (1 - 0.5 * big) * (1 + rng.normal(0, noise, len(q))), 0, None),
             "STL": np.clip(m * (0.7 + 0.6 * q) * (1 + rng.normal(0, noise * 1.5, len(q))), 0, None),
@@ -275,7 +283,8 @@ def to_yahoo_scoreboard(week_rows: pd.DataFrame) -> dict:
                 {"team_stats": {"coverage_type": "week", "week": str(r["week"]), "stats": [
                     stat("9004003", f"{int(r['FGM'])}/{int(r['FGA'])}"), stat("5", pct(r["FGM"], r["FGA"])),
                     stat("9007006", f"{int(r['FTM'])}/{int(r['FTA'])}"), stat("8", pct(r["FTM"], r["FTA"])),
-                    stat("10", str(int(r["FG3M"]))), stat("12", str(int(r["PTS"]))), stat("15", str(int(r["REB"]))),
+                    stat("9010009", f"{int(r['FG3M'])}/{int(r['FG3A'])}"), stat("11", pct(r["FG3M"], r["FG3A"])),
+                    stat("12", str(int(r["PTS"]))), stat("15", str(int(r["REB"]))),
                     stat("16", str(int(r["AST"]))), stat("17", str(int(r["STL"]))), stat("18", str(int(r["BLK"]))),
                     stat("19", str(int(r["TOV"])))]}},
                 {"team_remaining_games": {"coverage_type": "week", "week": str(r["week"]), "total": {

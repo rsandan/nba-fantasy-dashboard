@@ -169,7 +169,7 @@ def parse_minutes(value) -> float:
 _BOX_FIELDS = {
     "FGM": "fieldGoalsMade", "FGA": "fieldGoalsAttempted",
     "FTM": "freeThrowsMade", "FTA": "freeThrowsAttempted",
-    "FG3M": "threePointersMade", "PTS": "points", "REB": "reboundsTotal",
+    "FG3M": "threePointersMade", "FG3A": "threePointersAttempted", "PTS": "points", "REB": "reboundsTotal",
     "AST": "assists", "STL": "steals", "BLK": "blocks", "TOV": "turnovers",
 }
 
@@ -226,7 +226,7 @@ BBREF_PER_GAME = "https://www.basketball-reference.com/leagues/NBA_{end_year}_pe
 ESPN_SCOREBOARD = ("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard"
                    "?dates={yyyymmdd}&limit=40")
 _BBREF_COLS = {"G": "GP", "MP": "MIN", "FG": "FGM", "FGA": "FGA", "FT": "FTM", "FTA": "FTA",
-               "3P": "FG3M", "PTS": "PTS", "TRB": "REB", "AST": "AST", "STL": "STL", "BLK": "BLK",
+               "3P": "FG3M", "3PA": "FG3A", "PTS": "PTS", "TRB": "REB", "AST": "AST", "STL": "STL", "BLK": "BLK",
                "TOV": "TOV"}
 
 

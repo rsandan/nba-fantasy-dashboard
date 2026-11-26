@@ -2,10 +2,10 @@
 
 Model
 -----
-Each team-week is summarised as a vector of **per player-game rates** over 11 additive
+Each team-week is summarised as a vector of **per player-game rates** over 12 additive
 components::
 
-    FGA, FG%, FTA, FT%, 3PTM, PTS, REB, AST, STL, BLK, TO     (per game started)
+    FGA, FG%, FTA, FT%, 3PTA, 3PT%, PTS, REB, AST, STL, BLK, TO     (per game started)
 
 Working per game (Yahoo's ``completed_games``) instead of per week matters: weekly
 totals swing mostly with how many games a team gets (schedule, injuries, streaming),
@@ -19,8 +19,8 @@ Team mean rates
     projection if supplied, which is what makes week-1 predictions sensible.
 
 Week-to-week noise
-    Residuals from each team's own mean, pooled across the league, give an 11x11
-    covariance. Categories are correlated (a big-volume week lifts PTS, 3PTM, FGA and
+    Residuals from each team's own mean, pooled across the league, give a 12x12
+    covariance. Categories are correlated (a big-volume week lifts PTS, 3PTA, FGA and
     TO together; a hot shooting week lifts FG% and PTS), and ignoring that
     overstates how often a team sweeps or gets swept. The covariance is estimated on
     rates rescaled by ``sqrt(games / G_ref)`` because the variance of a per-game average
@@ -45,12 +45,12 @@ import zlib
 
 from .categories import CATEGORIES, CATEGORY_NAMES, compare
 
-COMPONENTS = ["FGA", "FGP", "FTA", "FTP", "FG3M", "PTS", "REB", "AST", "STL", "BLK", "TOV"]
-PCT_COMPONENTS = {"FGP": ("FGM", "FGA"), "FTP": ("FTM", "FTA")}
+COMPONENTS = ["FGA", "FGP", "FTA", "FTP", "FG3A", "FG3P", "PTS", "REB", "AST", "STL", "BLK", "TOV"]
+PCT_COMPONENTS = {"FGP": ("FGM", "FGA"), "FTP": ("FTM", "FTA"), "FG3P": ("FG3M", "FG3A")}
 _IDX = {c: i for i, c in enumerate(COMPONENTS)}
 # Weakly-informative fallback noise (coefficient of variation per component) used only
 # when there are too few completed weeks to estimate a covariance (preseason / week 1).
-_FALLBACK_CV = {"FGA": 0.08, "FGP": 0.05, "FTA": 0.15, "FTP": 0.07, "FG3M": 0.15, "PTS": 0.08,
+_FALLBACK_CV = {"FGA": 0.08, "FGP": 0.05, "FTA": 0.15, "FTP": 0.07, "FG3A": 0.12, "FG3P": 0.08, "PTS": 0.08,
                 "REB": 0.08, "AST": 0.10, "STL": 0.18, "BLK": 0.25, "TOV": 0.12}
 
 
@@ -59,11 +59,12 @@ def team_week_rates(tw: pd.DataFrame) -> pd.DataFrame:
     df = tw[tw["games"].fillna(0) > 0].copy()
     g = df["games"]
     out = pd.DataFrame({"team_key": df["team_key"], "week": df["week"], "games": g})
-    for c in ("FGA", "FTA", "FG3M", "PTS", "REB", "AST", "STL", "BLK", "TOV"):
+    for c in ("FGA", "FTA", "FG3A", "PTS", "REB", "AST", "STL", "BLK", "TOV"):
         out[c] = df[c] / g
-    out["FGP"] = np.where(df["FGA"] > 0, df["FGM"] / df["FGA"].where(df["FGA"] > 0, 1), np.nan)
-    out["FTP"] = np.where(df["FTA"] > 0, df["FTM"] / df["FTA"].where(df["FTA"] > 0, 1), np.nan)
-    out[["FGP", "FTP"]] = out[["FGP", "FTP"]].fillna(out[["FGP", "FTP"]].mean())
+    for pc, (m, a) in PCT_COMPONENTS.items():
+        out[pc] = np.where(df[a] > 0, df[m] / df[a].where(df[a] > 0, 1), np.nan)
+    pcts = list(PCT_COMPONENTS)
+    out[pcts] = out[pcts].fillna(out[pcts].mean())
     return out.reset_index(drop=True)
 
 
@@ -105,7 +106,7 @@ def fit_team_model(
     if rates.empty:
         # Preseason: no league history. Fall back to priors or a neutral generic team.
         base = (priors.mean() if priors is not None and not priors.empty
-                else pd.Series({"FGA": 8.4, "FGP": 0.475, "FTA": 2.4, "FTP": 0.785, "FG3M": 1.4,
+                else pd.Series({"FGA": 8.4, "FGP": 0.475, "FTA": 2.4, "FTP": 0.785, "FG3A": 3.8, "FG3P": 0.36,
                                 "PTS": 11.8, "REB": 4.6, "AST": 2.8, "STL": 0.85, "BLK": 0.55,
                                 "TOV": 1.45}))
         mu = pd.DataFrame([priors.loc[t] if priors is not None and t in priors.index else base
@@ -168,7 +169,7 @@ def perturbed(model: TeamModel, rng: np.random.Generator) -> TeamModel:
     for t in mu.index:
         shift = L @ rng.standard_normal(len(COMPONENTS)) * np.sqrt(model.mean_uncertainty_scale(t))
         mu.loc[t] = mu.loc[t].values + shift
-    mu[["FGP", "FTP"]] = mu[["FGP", "FTP"]].clip(0, 1)
+    mu[list(PCT_COMPONENTS)] = mu[list(PCT_COMPONENTS)].clip(0, 1)
     out = TeamModel(mu, model.cov, model.g_ref, model.games_per_week, model.league_mean,
                     model.n_weeks, model.diagnostics, model.n_eff, model.prior_weeks)
     out.n_eff = pd.Series(1e9, index=mu.index)  # strength already drawn: no extra mean noise
@@ -180,7 +181,7 @@ def _simulate_totals(model: TeamModel, team: str, current: dict, n_rem: float,
                      n_sims: int, rng: np.random.Generator) -> dict[str, np.ndarray]:
     """Simulated end-of-week additive totals for one team."""
     cur = {k: float(current.get(k, 0.0) or 0.0) for k in
-           ("FGM", "FGA", "FTM", "FTA", "FG3M", "PTS", "REB", "AST", "STL", "BLK", "TOV")}
+           ("FGM", "FGA", "FTM", "FTA", "FG3M", "FG3A", "PTS", "REB", "AST", "STL", "BLK", "TOV")}
     out = {k: np.full(n_sims, v) for k, v in cur.items()}
     if n_rem and n_rem > 0:
         # Two noise sources, same covariance shape: week-to-week variation of a per-game
@@ -196,7 +197,10 @@ def _simulate_totals(model: TeamModel, team: str, current: dict, n_rem: float,
         out["FTA"] += fta
         out["FGM"] += np.rint(fga * np.clip(d["FGP"], 0, 1))
         out["FTM"] += np.rint(fta * np.clip(d["FTP"], 0, 1))
-        for c in ("FG3M", "PTS", "REB", "AST", "STL", "BLK", "TOV"):
+        fg3a = np.minimum(np.rint(np.clip(d["FG3A"], 0, None) * n_rem), fga)
+        out["FG3A"] += fg3a
+        out["FG3M"] += np.rint(fg3a * np.clip(d["FG3P"], 0, 1))
+        for c in ("PTS", "REB", "AST", "STL", "BLK", "TOV"):
             out[c] += np.rint(np.clip(d[c], 0, None) * n_rem)
     return out
 
@@ -408,10 +412,11 @@ def roster_priors(rosters: pd.DataFrame, players: pd.DataFrame) -> pd.DataFrame:
     rows = {}
     for team, g in m.groupby("team_key"):
         w = g["_w"] / g["_w"].sum()
-        tot = {c: float((g[c] * w).sum()) for c in ("FGM", "FGA", "FTM", "FTA", "FG3M", "PTS", "REB",
-                                                    "AST", "STL", "BLK", "TOV")}
+        tot = {c: float((g[c] * w).sum()) for c in ("FGM", "FGA", "FTM", "FTA", "FG3M", "FG3A", "PTS",
+                                                    "REB", "AST", "STL", "BLK", "TOV")}
         rows[team] = {"FGA": tot["FGA"], "FGP": tot["FGM"] / max(tot["FGA"], 1e-9), "FTA": tot["FTA"],
-                      "FTP": tot["FTM"] / max(tot["FTA"], 1e-9), "FG3M": tot["FG3M"], "PTS": tot["PTS"],
+                      "FTP": tot["FTM"] / max(tot["FTA"], 1e-9), "FG3A": tot["FG3A"],
+                      "FG3P": tot["FG3M"] / max(tot["FG3A"], 1e-9), "PTS": tot["PTS"],
                       "REB": tot["REB"], "AST": tot["AST"], "STL": tot["STL"], "BLK": tot["BLK"],
                       "TOV": tot["TOV"]}
     return pd.DataFrame(rows).T[COMPONENTS]

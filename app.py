@@ -19,7 +19,7 @@ import streamlit as st
 from fantasy import matchup_model as mm
 from fantasy import nba_data, power, trade
 from fantasy import ui
-from fantasy.categories import CATEGORIES, CATEGORY_NAMES, category_value, compare
+from fantasy.categories import BY_NAME, CATEGORIES, CATEGORY_NAMES, category_value, compare
 from fantasy.data_source import connect
 from fantasy.ui import e, pct, signed
 from fantasy.valuation import Z_COLS, value_players
@@ -215,7 +215,7 @@ def title_bar(title: str, sub: str = "", live: bool = False):
 def fmt_cat(value: float, cat_name: str) -> str:
     if value != value:
         return "–"
-    return f"{value:.3f}".lstrip("0") if cat_name in ("FG%", "FT%") else f"{value:,.0f}"
+    return f"{value:.3f}".lstrip("0") if BY_NAME[cat_name].kind == "pct" else f"{value:,.0f}"
 
 
 def banked_score(a: pd.Series, b: pd.Series) -> tuple[int, int, int]:
@@ -526,7 +526,7 @@ def _rankings(photos: bool):
         ui.footnote("No players match.")
     more_button("rank_n", n, len(table), 25)
     ui.footnote("Value per game, in z-scores against the players worth rostering in a "
-                f"{META.num_teams}-team league. FG% and FT% count shot volume.")
+                f"{META.num_teams}-team league. Shooting percentages count shot volume.")
 
 
 def _roster_options(team_key: str, ros: pd.DataFrame, vals: pd.DataFrame) -> dict:

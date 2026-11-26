@@ -33,8 +33,8 @@ TEAM_WEEK_COLUMNS = [
     "week", "matchup_id", "team_key", "team_name", "opponent_key", "status",
     "is_playoffs", "is_consolation", "week_start", "week_end",
     "games", "live_games", "remaining_games",
-    "FGM", "FGA", "FTM", "FTA", "FG3M", "PTS", "REB", "AST", "STL", "BLK", "TOV",
-    "FG%", "FT%",
+    "FGM", "FGA", "FTM", "FTA", "FG3M", "FG3A", "PTS", "REB", "AST", "STL", "BLK", "TOV",
+    "FG%", "FT%", "3PT%",
 ]
 
 
@@ -197,7 +197,9 @@ def _parse_team_block(team: list) -> dict:
                     row["FGM"], row["FGA"] = _split_made_attempted(value)
                 elif label == "FTM/A":
                     row["FTM"], row["FTA"] = _split_made_attempted(value)
-                elif label in ("FG%", "FT%"):
+                elif label == "3PTM/A":
+                    row["FG3M"], row["FG3A"] = _split_made_attempted(value)
+                elif label in ("FG%", "FT%", "3PT%"):
                     row[label] = _to_float(value)
                 elif label in YAHOO_NAME_TO_COL:
                     v = _to_float(value)

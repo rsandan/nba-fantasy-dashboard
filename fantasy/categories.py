@@ -30,7 +30,7 @@ class Category:
 CATEGORIES: tuple[Category, ...] = (
     Category("FG%", "pct", makes="FGM", attempts="FGA", decimals=3),
     Category("FT%", "pct", makes="FTM", attempts="FTA", decimals=3),
-    Category("3PTM", "count", stat="FG3M"),
+    Category("3PT%", "pct", makes="FG3M", attempts="FG3A", decimals=3),
     Category("PTS", "count", stat="PTS"),
     Category("REB", "count", stat="REB"),
     Category("AST", "count", stat="AST"),
@@ -46,7 +46,8 @@ BY_NAME: dict[str, Category] = {c.name: c for c in CATEGORIES}
 # lets us simulate percentages correctly (simulate makes and attempts, then divide).
 COUNT_COLS: list[str] = [c.stat for c in CATEGORIES if c.kind == "count"]
 PCT_PARTS: list[tuple[str, str]] = [(c.makes, c.attempts) for c in CATEGORIES if c.kind == "pct"]
-ADDITIVE_COLS: list[str] = ["FGM", "FGA", "FTM", "FTA", *COUNT_COLS]
+ADDITIVE_COLS: list[str] = list(dict.fromkeys(
+    [col for pair in PCT_PARTS for col in pair] + ["FGM", "FGA", "FTM", "FTA", "FG3M", "FG3A"] + COUNT_COLS))
 
 # Yahoo NBA stat ids (stable across seasons for the standard game).
 YAHOO_STAT_IDS: dict[str, str] = {
@@ -54,7 +55,10 @@ YAHOO_STAT_IDS: dict[str, str] = {
     "5": "FG%",
     "9007006": "FTM/A",
     "8": "FT%",
+    "9010009": "3PTM/A",   # display-only made/attempted, like FGM/A and FTM/A
+    "9": "3PTA",
     "10": "3PTM",
+    "11": "3PT%",
     "12": "PTS",
     "15": "REB",
     "16": "AST",
@@ -63,7 +67,7 @@ YAHOO_STAT_IDS: dict[str, str] = {
     "19": "TO",
 }
 YAHOO_NAME_TO_COL: dict[str, str] = {
-    "3PTM": "FG3M", "PTS": "PTS", "REB": "REB", "AST": "AST",
+    "3PTM": "FG3M", "3PTA": "FG3A", "PTS": "PTS", "REB": "REB", "AST": "AST",
     "STL": "STL", "BLK": "BLK", "TO": "TOV",
 }
 

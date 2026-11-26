@@ -24,7 +24,7 @@ import pandas as pd
 
 log = logging.getLogger(__name__)
 
-STAT_COLS = ["MIN", "FGM", "FGA", "FTM", "FTA", "FG3M", "PTS", "REB", "AST", "STL", "BLK", "TOV"]
+STAT_COLS = ["MIN", "FGM", "FGA", "FTM", "FTA", "FG3M", "FG3A", "PTS", "REB", "AST", "STL", "BLK", "TOV"]
 NBA_HEADERS = {
     "Host": "stats.nba.com",
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -111,6 +111,8 @@ def standardize_player_frame(df: pd.DataFrame) -> pd.DataFrame:
     keep = ["PLAYER_ID", "PLAYER_NAME", "TEAM", "GP", *STAT_COLS]
     out = df[[c for c in keep if c in df.columns]].copy()
     for c in ["GP", *STAT_COLS]:
+        if c not in out:            # older snapshots predate a column (e.g. FG3A)
+            out[c] = 0.0
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0)
     out["name_key"] = out["PLAYER_NAME"].map(normalize_name)
     return out.reset_index(drop=True)
