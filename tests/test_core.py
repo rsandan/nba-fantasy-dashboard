@@ -323,3 +323,10 @@ def test_streaming_board_never_recommends_injured_players(league):
     gtd = trade.streaming_board(fa, vals.table, pd.Series(3.0, index=demo.NBA_TEAMS),
                                 pd.Series(1.0, index=CATEGORY_NAMES), vals.replacement)
     assert star in set(gtd["name"])
+
+
+def test_fantasy_points_yahoo_default():
+    import pandas as pd
+    from fantasy.valuation import fantasy_points
+    df = pd.DataFrame({"PTS": [30.0], "REB": [10.0], "AST": [5.0], "STL": [1.0], "BLK": [1.0], "TOV": [3.0]})
+    assert fantasy_points(df).iloc[0] == 52.5

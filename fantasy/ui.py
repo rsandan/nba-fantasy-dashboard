@@ -326,8 +326,10 @@ button[kind], [data-testid="stPopover"] button { min-height:44px; }
 [data-testid="stExpander"] [data-testid="stExpanderDetails"] { padding-left:12px; padding-right:12px; }
 @media (max-width:380px) { .hero .big { font-size:40px; } .cat { grid-template-columns:minmax(0,1fr) 96px minmax(0,1fr); } }
 /* iOS segmented control: gray track, raised thumb */
+[data-testid="stElementContainer"]:has(> [data-testid="stButtonGroup"] button[data-variant="segmented_control"]),
+[data-testid="stButtonGroup"]:has(button[data-variant="segmented_control"]) { width:100% !important; }
 [data-testid="stButtonGroup"] [role="radiogroup"]:has(> button[data-variant="segmented_control"]) {
-  display:flex; width:100%; background:var(--fill); border-radius:9px; padding:2px; gap:0; }
+  display:flex; width:100%; max-width:none !important; background:var(--fill); border-radius:9px; padding:2px; gap:0; }
 button[data-variant="segmented_control"] { flex:1 1 0; min-height:32px; border:none !important;
   background:transparent !important; border-radius:7px !important; color:var(--label) !important;
   box-shadow:none !important; margin:0 !important; }

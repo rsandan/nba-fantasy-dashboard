@@ -21,7 +21,7 @@ number comes from the same simulation model, so a headline never contradicts the
 | **Home** | Your **game plan**: the top 3 moves for this week, each scored by how much it changes your odds (e.g. *Add X, drop Y: 17% → 26%*). A top story, a headline for every matchup (coin flip, upset watch, comeback, blowout), and the **Wire report**: one good and one bad thing about every team. A lineup alert appears when something needs fixing today. |
 | **This Week** | Live win probability, all nine categories with banked totals, projections and odds (bars grow toward whoever is favored), your game plan, **Lineup check**, **Strengths & weaknesses**, and a scout card for your opponent. |
 | **Standings** | **Standings** (record, all-play, schedule luck) · **Power** (schedule-neutral strength) · **Leaders**: a teams × categories rank grid, a leaderboard per category with movement arrows, and week-by-week trend charts to compare any 4 teams against the league average. |
-| **Players** | **Pickups** weighted toward the categories still in play in your matchup (injured players excluded, game-time decisions flagged) · **Rankings** with punt and stat-window filters. |
+| **Players** | **Pickups** weighted toward the categories still in play in your matchup (injured players excluded, game-time decisions flagged) · **Rankings** with punt and stat-window filters, sorted by 9-cat H2H value by default or by Yahoo default fantasy points (volume view, ignores shooting %). |
 | **Trade** | **Trade Hub**: best partners by how well your needs interlock, and suggested 1-for-1 / 2-for-1 deals that are fair on overall value *and* help both teams. One tap loads a suggestion into the **builder**, which grades any trade and calls out overpays. |
 
 ### Built like a phone app

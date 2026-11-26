@@ -185,3 +185,14 @@ def trade_market(table: pd.DataFrame) -> pd.Series:
     repl = float(ordered.iloc[min(n_pool, len(ordered) - 1)])
     market = (base - repl).clip(lower=0) ** STAR_EXP
     return pd.Series(market.values, index=t["PLAYER_ID"].values)
+
+
+# ============================================================ fantasy points
+# Yahoo's default points-league scoring (help.yahoo.com/kb/SLN6919). Shown as an
+# alternate sort; this league is scored on the nine categories, not points.
+YAHOO_POINTS = {"PTS": 1.0, "REB": 1.2, "AST": 1.5, "STL": 3.0, "BLK": 3.0, "TOV": -1.0}
+
+
+def fantasy_points(df: pd.DataFrame) -> pd.Series:
+    """Fantasy points per game under Yahoo's default points scoring."""
+    return sum(df[col].astype(float) * w for col, w in YAHOO_POINTS.items())

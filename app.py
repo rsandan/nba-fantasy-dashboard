@@ -24,7 +24,7 @@ from fantasy import ui
 from fantasy.categories import BY_NAME, CATEGORIES, CATEGORY_NAMES, category_value, compare
 from fantasy.data_source import connect
 from fantasy.ui import e, pct, signed
-from fantasy.valuation import Z_COLS, value_players
+from fantasy.valuation import Z_COLS, fantasy_points, value_players
 
 st.set_page_config(page_title="Love Island", page_icon="🏀", layout="centered",
                    initial_sidebar_state="collapsed")
@@ -743,6 +743,10 @@ def _rankings(photos: bool):
             who = st.segmented_control("Show", ["All", "Free agents", "Rostered"], default="All",
                                        required=True, key="rank_who")
             punts = st.pills("Punt", CATEGORY_NAMES, selection_mode="multi", key="rank_punts")
+            sort = st.segmented_control("Sort by", ["9-cat", "Points"], default="9-cat",
+                                        required=True, key="rank_sort",
+                                        help="Fantasy points use Yahoo's default points scoring. "
+                                             "This league is scored on the 9 categories.")
     players = window_players(window)
     if players.empty:
         ui.footnote("No stats for this window yet. Try Blended or Last season.")
@@ -752,31 +756,46 @@ def _rankings(photos: bool):
     ros = matched_rosters(KEY, table)
     owner = dict(zip(ros["PLAYER_ID"], ros["team_key"])) if not ros.empty else {}
     table = table.assign(owner=table["PLAYER_ID"].map(owner))
+    by_points = sort == "Points"
+    if by_points:
+        table = table.assign(cat_rank=table["rank"], FPTS=fantasy_points(table))
+        table = table.sort_values("FPTS", ascending=False).reset_index(drop=True)
+        table["rank"] = range(1, len(table) + 1)
     if who == "Free agents":
         table = table[table["owner"].isna()]
     elif who == "Rostered":
         table = table[table["owner"].notna()]
     if q:
         table = table[table["PLAYER_NAME"].str.contains(q, case=False, regex=False)]
-    sub = [window] + ([f"punting {', '.join(punts)}"] if punts else [])
+    sub = [window] + (["fantasy points"] if by_points else [f"punting {', '.join(punts)}"] if punts else [])
     ui.section(" · ".join(sub))
     n = show_more("rank_n", len(table), 25)
     rows = []
     for _, p in table.head(n).iterrows():
         own = NAMES.get(p["owner"], "Free agent") if p["owner"] == p["owner"] else "Free agent"
-        rows.append(ui.row(
-            e(p["PLAYER_NAME"]), e(f"{p.get('TEAM', '')} · {own}"),
-            signed(p["value"], 2), e(_top_cats(p)), lead=ui.rank(int(p["rank"])),
-            e1_class=ui.sign_class(p["value"])))
+        if by_points:
+            rows.append(ui.row(
+                e(p["PLAYER_NAME"]), e(f"{p.get('TEAM', '')} · {own}"),
+                f"{p['FPTS']:.1f}", e(f"9-cat #{int(p['cat_rank'])}"), lead=ui.rank(int(p["rank"]))))
+        else:
+            rows.append(ui.row(
+                e(p["PLAYER_NAME"]), e(f"{p.get('TEAM', '')} · {own}"),
+                signed(p["value"], 2), e(_top_cats(p)), lead=ui.rank(int(p["rank"])),
+                e1_class=ui.sign_class(p["value"])))
     if rows:
         ui.group(rows)
     else:
         ui.footnote("No players match.")
     more_button("rank_n", n, len(table), 25)
-    ui.footnote("Value per game, in z-scores against the players worth rostering in a "
-                f"{META.num_teams}-team league, weighted for head-to-head: categories that swing a lot week "
-                "to week (3PT%, steals, FG%) count less than steady ones (points, rebounds, assists). "
-                "Shooting percentages count shot volume.")
+    if by_points:
+        ui.footnote("Fantasy points per game with Yahoo's default points scoring: PTS 1, REB 1.2, AST 1.5, "
+                    "STL 3, BLK 3, TO −1. It ignores FG%, FT% and 3PT%, so it's a volume view, not how this "
+                    "league is scored. The 9-cat rank under each number shows the difference.")
+    else:
+        ui.footnote("Value per game, in z-scores against the players worth rostering in a "
+                    f"{META.num_teams}-team league, weighted for head-to-head: categories that swing a lot week "
+                    "to week (3PT%, steals, FG%) count less than steady ones (points, rebounds, assists). "
+                    "Shooting percentages count shot volume.")
 
 
 def _roster_options(team_key: str, ros: pd.DataFrame, vals: pd.DataFrame) -> dict:
