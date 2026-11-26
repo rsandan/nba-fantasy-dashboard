@@ -252,6 +252,17 @@ def make_transactions(rng, keys, names, players, season_start, weeks):
                              "player_id": int(p["PLAYER_ID"]) % 100000, "player_name": p["PLAYER_NAME"],
                              "nba_team": p["TEAM"], "transaction_id": str(tid + 100000)})
             tid += 1
+    # A couple of trades late in the window so the trade storylines have something to say.
+    stars = players.sort_values("MIN", ascending=False).iloc[20:80].reset_index(drop=True)
+    for i, (ta, tb) in enumerate(((keys[0], keys[3]), (keys[5], keys[8]))):
+        ts = pd.Timestamp(datetime.combine(season_start + timedelta(days=weeks * 7 - 4 - 3 * i),
+                                           datetime.min.time()), tz=tz) + pd.Timedelta(hours=21)
+        give, get = stars.iloc[2 * i], stars.iloc[2 * i + 1]
+        for team, p in ((ta, get), (tb, give)):
+            rows.append(dict(transaction_id=f"T{i}", transaction_type="trade", status="successful",
+                             team_key=team, team_name=names[team], source_type="team", timestamp=ts,
+                             action="trade", player_id=int(p["PLAYER_ID"]) % 100000,
+                             player_name=p["PLAYER_NAME"], nba_team=p["TEAM"]))
     df = pd.DataFrame(rows, columns=["transaction_id", "transaction_type", "status", "team_key",
                                      "team_name", "source_type", "timestamp", "action",
                                      "player_id", "player_name", "nba_team"])

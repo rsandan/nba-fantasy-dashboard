@@ -17,7 +17,7 @@ import pandas as pd
 import streamlit as st
 
 from fantasy import matchup_model as mm
-from fantasy import nba_data, power, trade
+from fantasy import insights, nba_data, power, trade
 from fantasy import ui
 from fantasy.categories import BY_NAME, CATEGORIES, CATEGORY_NAMES, category_value, compare
 from fantasy.data_source import connect
@@ -90,6 +90,14 @@ def load_free_agents(key: str) -> pd.DataFrame:
     return SOURCE.free_agents()
 
 
+@st.cache_data(ttl=900, show_spinner=False)
+def load_transactions(key: str) -> pd.DataFrame:
+    try:
+        return SOURCE.transactions()
+    except Exception:  # transactions are a nice-to-have; never take the page down
+        return pd.DataFrame()
+
+
 # NBA stats come from snapshots refreshed every few hours by a GitHub Action (see
 # fantasy/snapshot.py), so an hour-long cache picks up each refresh without re-reading
 # the CSV on every rerun.
@@ -145,6 +153,43 @@ def season_sim(_model: mm.TeamModel, tw: pd.DataFrame, future: pd.DataFrame, mod
 @st.cache_data(ttl=300, show_spinner="Rating teams…")
 def ratings(_model: mm.TeamModel, model_sig: str) -> pd.Series:
     return power.power_ratings(_model, n_sims=1200)
+
+
+def league_now() -> pd.Timestamp:
+    """League-local 'now'. The demo league is frozen mid-week, so its clock is too."""
+    if SOURCE.is_demo:
+        return pd.Timestamp(TODAY).tz_localize(ET) + pd.Timedelta(hours=20)
+    return pd.Timestamp.now(tz=ET)
+
+
+def week_games_left(live: pd.DataFrame, me: str | None) -> tuple[pd.Series, date]:
+    week_end = TODAY
+    rows = live[live["team_key"] == me] if me else live
+    if not rows.empty and isinstance(rows.iloc[0]["week_end"], str) and rows.iloc[0]["week_end"]:
+        week_end = date.fromisoformat(rows.iloc[0]["week_end"])
+    return nba_data.games_by_team(load_schedule(SEASON), TODAY, week_end), week_end
+
+
+@st.cache_data(ttl=300, show_spinner="Building your game plan…")
+def plan_for(_model: mm.TeamModel, me: str, live: pd.DataFrame, values: pd.DataFrame | None,
+             replacement: pd.Series | None, rosters: pd.DataFrame, fa: pd.DataFrame,
+             games_left: pd.Series, model_sig: str):
+    return insights.game_plan(me, live, _model, values, replacement, rosters, fa, games_left, NAMES)
+
+
+@st.cache_data(ttl=300, show_spinner="Writing the headlines…")
+def feed_for(_sims: list, live: pd.DataFrame, tw: pd.DataFrame, tx: pd.DataFrame, ap_summary: pd.DataFrame,
+             values: pd.DataFrame | None, now_key: str, model_sig: str) -> dict:
+    return insights.league_feed(_sims, live, tw, tx, NAMES, ap_summary, META.scoring_type == "head",
+                                values, pd.Timestamp(now_key))
+
+
+def my_plan(c: dict, live: pd.DataFrame, me: str):
+    games_left, _ = week_games_left(live, me)
+    vals = c["vals"]
+    return plan_for(c["model"], me, live, vals.table if vals is not None else None,
+                    vals.replacement if vals is not None else None, c["rosters"],
+                    load_free_agents(KEY), games_left, c["sig"])
 
 
 def model_signature(tw: pd.DataFrame) -> str:
@@ -316,7 +361,10 @@ def page_week():
     if mine:
         st.html(scoreboard(oriented(mine[0], live, me)))
         ui.footnote("Each matchup is played out 4,000 times from what's already banked plus every "
-                    "team's remaining games. The bar under each category is your chance to win it.")
+                    "team's remaining games. The bar under each category grows toward whoever is favored.")
+        plan = my_plan(c, live, me)
+        if plan:
+            st.html(ui.plan_card(plan, NAMES.get(me, ""), NAMES.get(plan.opp, ""), logo(me)))
 
     ui.section("Your league" if mine else "Matchups")
     for s in others:
@@ -332,6 +380,49 @@ def page_week():
             load_live_week.clear()
             week_sims.clear()
             st.rerun()
+
+
+def page_home():
+    c = core()
+    tw, model = c["tw"], c["model"]
+    me = my_team()
+    live = tw[tw["week"] == META.current_week]
+    started = not live.empty and (live["status"] != "preevent").any()
+    now = league_now()
+    title_bar("Love Island", f"Week {META.current_week} · {now:%a %b %-d}",
+              live=started and live["status"].eq("midevent").any())
+    if me is None:
+        ui.section("Welcome")
+        with st.container(border=False, key="onboard_home"):
+            team_picker("me_onboard_home", "Which team is yours?")
+        ui.footnote("Pick your team and this page leads with your game plan for the week.")
+    if live.empty:
+        ui.footnote("No matchups yet. Headlines show up once the league schedule is set.")
+        return
+
+    sims = week_sims(model, live, c["sig"])
+    if me:
+        plan = my_plan(c, live, me)
+        if plan:
+            st.html(ui.plan_card(plan, NAMES.get(me, ""), NAMES.get(plan.opp, ""), logo(me)))
+            st.page_link(PAGES[1], label="See your full matchup", icon=":material/chevron_right:",
+                         query_params={"team": _short(me)})
+
+    feed = feed_for(sims, live, tw, load_transactions(KEY), c["ap"]["summary"],
+                    c["vals"].table if c["vals"] is not None else None,
+                    now.floor("15min").isoformat(), c["sig"])
+    if feed["top"] is not None:
+        st.html(ui.story_card(feed["top"], logo, NAMES, top=True))
+    rest = [s for s in feed["matchups"] if s is not feed["top"]]
+    if rest:
+        ui.section("Around the league")
+        for s in rest:
+            st.html(ui.story_card(s, logo, NAMES))
+    if feed["wire"]:
+        ui.section("Wire report")
+        st.html(ui.wire_list(feed["wire"][:8], logo))
+    ui.footnote(f"Updated {now:%-I:%M %p} ET. Odds come from 4,000 simulations of every matchup; "
+                "player rankings are per-game value in this league's nine categories.")
 
 
 def _cat_summary(rates: pd.DataFrame, team_key: str) -> str:
@@ -609,7 +700,8 @@ def page_trade():
 
 # ======================================================================== navigation
 PAGES = [
-    st.Page(page_week, title="This Week", icon=":material/sports_basketball:", default=True),
+    st.Page(page_home, title="Home", icon=":material/home:", default=True),
+    st.Page(page_week, title="This Week", icon=":material/sports_basketball:", url_path="week"),
     st.Page(page_standings, title="Standings", icon=":material/leaderboard:", url_path="standings"),
     st.Page(page_players, title="Players", icon=":material/person_search:", url_path="players"),
     st.Page(page_trade, title="Trade", icon=":material/swap_horiz:", url_path="trade"),

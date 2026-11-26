@@ -8,7 +8,7 @@ pytest.importorskip("streamlit")
 from streamlit.testing.v1 import AppTest  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
-PAGES = ["page_week", "page_standings", "page_players", "page_trade"]
+PAGES = ["page_home", "page_week", "page_standings", "page_players", "page_trade"]
 
 
 @pytest.mark.parametrize("team", [None, "1"])

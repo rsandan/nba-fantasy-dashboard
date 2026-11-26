@@ -94,6 +94,21 @@ tests/                     46 tests: parsing, math, model skill/calibration, lea
                            every tab renders (mid-season and opening night)
 ```
 
+## Home: game plans and storylines
+
+`fantasy/insights.py` powers the Home tab (the new landing page):
+
+* **Your game plan**: the top 3 moves for your live matchup. Add/drop pairs are scored by
+  re-running the matchup simulation with the pickup's expected stats over his remaining
+  games added and the dropped player's removed (same seed), so each shows its effect on
+  your odds (e.g. 19% → 26%). Also: the most winnable category you trail (with the
+  per-game gap), a lead worth protecting, injured players in active slots, games-left
+  edges, and lost causes not worth chasing. The same card appears on This Week.
+* **Storylines**: a headline for every matchup (coin flip, upset watch, comeback,
+  blowout), tied to transactions when a team just added help in the swing category, plus
+  a wire report from the transaction log (trades and who won them, scooped drops,
+  steals, regrets, grinders, quiet managers) and win/loss streaks.
+
 ## How NBA stats load (and why pages are fast)
 
 stats.nba.com blocks or throttles most cloud hosts, including Render, so the app never

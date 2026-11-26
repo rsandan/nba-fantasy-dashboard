@@ -173,6 +173,48 @@ button[kind], [data-testid="stPopover"] button { min-height:44px; }
 .verdict .n .k { font-size:12px; color:var(--label2); }
 .verdict .n .v { font-family:var(--display); font-size:32px; font-weight:800; letter-spacing:-1px; font-variant-numeric:tabular-nums; }
 
+/* ---------- home: stories, game plan, wire ---------- */
+.tag { display:inline-block; font-size:11px; font-weight:800; letter-spacing:.6px; padding:3px 8px;
+  border-radius:6px; color:var(--tagc, var(--blue)); background:color-mix(in srgb, var(--tagc, var(--blue)) 15%, transparent); }
+.tag.red { --tagc:var(--red); } .tag.orange { --tagc:var(--orange); } .tag.green { --tagc:var(--green); }
+.tag.purple { --tagc:#af52de; } .tag.gray { --tagc:var(--label2); }
+.story { background:var(--card); border-radius:22px; padding:16px; border:.5px solid var(--edge); box-shadow:var(--shadow); }
+.story .hl { font-family:var(--display); font-size:19px; line-height:24px; font-weight:750; letter-spacing:-.3px;
+  color:var(--label); margin-top:9px; }
+.story .dk { font-size:15px; line-height:21px; color:var(--label2); margin-top:5px; }
+.story .ft { display:flex; align-items:center; gap:10px; margin-top:12px; }
+.story .ft .pa, .story .ft .pb { font-size:15px; font-weight:700; font-variant-numeric:tabular-nums; color:var(--label); }
+.story .ft .pb { color:var(--label2); }
+.story .ft .bar { flex:1; margin:0; height:6px; }
+.story.top { padding:20px 18px 18px; background:linear-gradient(160deg,
+  color-mix(in srgb, var(--blue) 22%, var(--card)) 0%, color-mix(in srgb, #af52de 10%, var(--card)) 55%, var(--card) 100%); }
+.story.top .kick { font-size:12px; font-weight:800; letter-spacing:.8px; color:var(--label2); text-transform:uppercase; }
+.story.top .hl { font-size:26px; line-height:31px; font-weight:800; letter-spacing:-.6px; }
+.story.top .dk { font-size:16px; line-height:22px; }
+.story .logos { display:flex; margin-top:14px; } .story .logos .tl { margin-right:-8px; box-shadow:0 0 0 2px var(--card); }
+.plan { background:var(--card); border-radius:22px; padding:16px 16px 6px; border:.5px solid var(--edge); box-shadow:var(--shadow); }
+.plan .ph { display:flex; align-items:center; gap:12px; }
+.plan .ph .t { font-family:var(--display); font-size:19px; font-weight:800; letter-spacing:-.3px; color:var(--label); line-height:23px; }
+.plan .ph .s { font-size:13px; color:var(--label2); margin-top:2px; }
+.plan .ph .odds { margin-left:auto; text-align:right; font-family:var(--display); font-size:30px; font-weight:800;
+  letter-spacing:-1px; font-variant-numeric:tabular-nums; }
+.act { display:flex; gap:12px; padding:13px 0; border-top:.5px solid var(--sep); }
+.plan .ph + .act { margin-top:12px; }
+.act .n { flex:none; width:26px; height:26px; border-radius:50%; background:var(--blue); color:#fff; font-size:14px;
+  font-weight:800; display:flex; align-items:center; justify-content:center; margin-top:1px; }
+.act .b { flex:1; min-width:0; }
+.act .at { font-size:16px; font-weight:700; color:var(--label); line-height:21px; }
+.act .ad { font-size:14px; color:var(--label2); line-height:19px; margin-top:3px; }
+.act .imp { flex:none; align-self:flex-start; font-size:12px; font-weight:800; font-variant-numeric:tabular-nums;
+  padding:4px 8px; border-radius:8px; color:var(--green); background:color-mix(in srgb, var(--green) 15%, transparent);
+  white-space:nowrap; }
+.act .imp.neutral { color:var(--label2); background:var(--fill2); }
+.wire .row { align-items:flex-start; padding:12px 16px; }
+.wire .row .t1 { font-size:16px; font-weight:600; -webkit-line-clamp:3; }
+.wire .row .t2 { white-space:normal; font-size:14px; line-height:19px; margin-top:3px; }
+.wire .row .meta { display:flex; align-items:center; gap:8px; margin-bottom:5px; }
+.wire .row .meta .when { font-size:12px; color:var(--label3); }
+
 /* native widgets: soften to match, 44pt rows for radio lists */
 [data-testid="stRadioGroup"] { gap:0 !important; width:100%; }
 [data-testid="stRadioGroup"] > div { width:100%; }
@@ -316,6 +358,57 @@ def diverging(p: float) -> str:
     w = abs(p - 0.5) * 100
     side = "a" if p >= 0.5 else "b"
     return f'<div class="dv"><span class="{side}" style="width:{w:.1f}%"></span></div>'
+
+
+TAG_COLORS = {"COIN FLIP": "orange", "UPSET WATCH": "red", "COMEBACK": "purple", "BLOWOUT": "gray",
+              "IN CONTROL": "", "TIGHT": "orange", "TRADE": "purple", "SCOOPED": "orange", "STEAL": "green",
+              "REGRET?": "red", "GRINDER": "", "HOT": "red", "QUIET": "gray", "STREAK": "green", "SKID": "red"}
+
+
+def tag(label: str) -> str:
+    return f'<span class="tag {TAG_COLORS.get(label, "")}">{e(label)}</span>'
+
+
+def story_card(st_obj, logo_fn, names: dict, top: bool = False) -> str:
+    """One headline card. ``logo_fn(team_key)`` renders a team picture."""
+    kick = '<div class="kick">Top story</div><div style="height:8px"></div>' if top else ""
+    foot = ""
+    if st_obj.p:
+        a, pa, b, pb = st_obj.p
+        foot = (f'<div class="ft">{logo_fn(a)}<span class="pa">{pct(pa)}</span>'
+                f'<div class="bar"><span style="width:{pa * 100:.1f}%"></span><span class="b"></span></div>'
+                f'<span class="pb">{pct(pb)}</span>{logo_fn(b)}</div>')
+    elif st_obj.teams:
+        foot = '<div class="logos">' + "".join(logo_fn(t) for t in st_obj.teams[:3]) + "</div>"
+    when = f' <span style="font-size:12px;color:var(--label3);margin-left:6px">{e(st_obj.when)}</span>' if st_obj.when else ""
+    return (f'<div class="story{" top" if top else ""}">{kick}{tag(st_obj.tag)}{when}'
+            f'<div class="hl">{e(st_obj.headline)}</div><div class="dk">{e(st_obj.dek)}</div>{foot}</div>')
+
+
+def plan_card(plan, my_name: str, opp_name: str, logo_html: str = "") -> str:
+    w = plan.p_win + plan.p_tie / 2
+    color = "var(--green)" if w >= 0.6 else "var(--red)" if w < 0.4 else "var(--orange)"
+    acts = []
+    for i, a in enumerate(plan.actions, 1):
+        neutral = "" if "→" in a.impact else " neutral"
+        imp = f'<div class="imp{neutral}">{e(a.impact)}</div>' if a.impact else ""
+        acts.append(f'<div class="act"><div class="n">{i}</div><div class="b"><div class="at">{e(a.title)}</div>'
+                    f'<div class="ad">{e(a.detail)}</div></div>{imp}</div>')
+    if not acts:
+        acts.append('<div class="act"><div class="b"><div class="ad">Nothing urgent. Set your lineup and ride it.</div></div></div>')
+    return (f'<div class="plan"><div class="ph">{logo_html}<div><div class="t">{e(plan.headline)}</div>'
+            f'<div class="s">Your game plan vs {e(opp_name)}</div></div>'
+            f'<div class="odds" style="color:{color}">{pct(w)}</div></div>{"".join(acts)}</div>')
+
+
+def wire_list(stories, logo_fn) -> str:
+    rows = []
+    for s in stories:
+        lead = logo_fn(s.teams[0]) if s.teams else '<div class="tl">🏀</div>'
+        when = f'<span class="when">{e(s.when)}</span>' if s.when else ""
+        rows.append(f'<div class="row">{lead}<div class="main"><div class="meta">{tag(s.tag)}{when}</div>'
+                    f'<div class="t1">{e(s.headline)}</div><div class="t2">{e(s.dek)}</div></div></div>')
+    return '<div class="list wire">' + "".join(rows) + "</div>"
 
 
 def group(rows: list[str]) -> None:
