@@ -60,8 +60,9 @@ def package_value(values: pd.DataFrame, ids: list, replacement: pd.Series, weigh
     sub = values[values["PLAYER_ID"].isin(ids)].drop_duplicates("PLAYER_ID")
     if sub.empty:
         return 0.0
+    from .valuation import h2h_factors
     repl = replacement.reindex(CATEGORY_NAMES).fillna(0)
-    w = weights.reindex(CATEGORY_NAMES).fillna(1.0)
+    w = weights.reindex(CATEGORY_NAMES).fillna(1.0) * h2h_factors(values).reindex(CATEGORY_NAMES).fillna(1.0)
     per = sum((sub[f"z_{c}"] - repl[c]) * w[c] for c in CATEGORY_NAMES)
     vals = sorted(per.tolist(), reverse=True)
     return float(sum(v * (DEPTH ** i) for i, v in enumerate(vals)))

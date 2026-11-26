@@ -113,3 +113,63 @@ def category_profile(values: pd.DataFrame, player_ids: list) -> pd.Series:
     s = sub[Z_COLS].sum()
     s.index = CATEGORY_NAMES
     return s
+
+
+# ============================================================ trade (market) value
+H2H_GAMES = 3.5   # games per player per H2H week, for weekly-noise estimates
+
+
+def h2h_factors(table: pd.DataFrame) -> pd.Series:
+    """Per-category shrink factors for head-to-head weekly noise ("G-score" idea).
+
+    Plain z-scores assume a player's week is known exactly. In H2H it isn't: a category
+    whose weekly noise is large next to the spread between players (3PT%, steals, the
+    shooting percentages) decides fewer matchups than its z-score implies. Factor =
+    1 / sqrt(1 + (within-player weekly SD / between-player SD)^2), measured on the
+    replacement pool: Poisson noise for counting stats, binomial for makes.
+    Reference: Rosenof, "Improving Algorithms for Fantasy Basketball" (arXiv:2307.02188).
+    """
+    pool = table[table["in_pool"]] if "in_pool" in table and table["in_pool"].any() else table
+    out = {}
+    for c in CATEGORIES:
+        if c.kind == "pct":
+            a = pool[c.attempts]
+            p = (pool[c.makes] / a.where(a > 0)).fillna(0)
+            pbar = pool[c.makes].sum() / max(a.sum(), 1e-9)
+            between = float(((p - pbar) * a).std())
+            within = float(np.sqrt((a * p * (1 - p)).mean() / H2H_GAMES))
+        else:
+            between = float(pool[c.stat].std())
+            within = float(np.sqrt(max(pool[c.stat].mean(), 0) / H2H_GAMES))
+        out[c.name] = 1.0 / np.sqrt(1.0 + (within / between) ** 2) if between > 0 else 1.0
+    return pd.Series(out)
+
+
+STAR_EXP = 1.5        # convexity: one star is worth more than two good players
+BUILD_HAIRCUT = 0.95  # build-around value counts slightly less (fits some rosters, not all)
+
+
+def trade_market(table: pd.DataFrame) -> pd.Series:
+    """What a player fetches in a trade, indexed by PLAYER_ID.
+
+    1. H2H-adjusted z (``h2h_factors``) so volatile one-category specialists aren't overrated.
+    2. Build-around value: the better of the 9-cat total and the best single-category punt
+       (rescaled to 9 categories). Giannis in a punt-FT% build is a top-5 player, and that's
+       the price his owner will ask.
+    3. Value above replacement (the pool's last rostered player), raised to ``STAR_EXP``:
+       stars are scarce, and consolidating frees a roster spot for a waiver pickup.
+    """
+    if table is None or table.empty:
+        return pd.Series(dtype=float)
+    t = table.drop_duplicates("PLAYER_ID")
+    f = h2h_factors(t)
+    gz = pd.DataFrame({c: t[f"z_{c}"] * f[c] for c in CATEGORY_NAMES}, index=t.index)
+    total = gz.sum(axis=1)
+    punt_best = pd.concat([(total - gz[c]) * len(CATEGORY_NAMES) / (len(CATEGORY_NAMES) - 1)
+                           for c in CATEGORY_NAMES], axis=1).max(axis=1)
+    base = pd.concat([total, BUILD_HAIRCUT * punt_best], axis=1).max(axis=1)
+    n_pool = int(t["in_pool"].sum()) if "in_pool" in t else len(t)
+    ordered = base.sort_values(ascending=False)
+    repl = float(ordered.iloc[min(n_pool, len(ordered) - 1)])
+    market = (base - repl).clip(lower=0) ** STAR_EXP
+    return pd.Series(market.values, index=t["PLAYER_ID"].values)

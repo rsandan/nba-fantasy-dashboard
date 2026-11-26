@@ -28,6 +28,7 @@ import pandas as pd
 
 from .categories import CATEGORY_NAMES
 from .trade import DEPTH, context_weights, is_unavailable
+from .valuation import h2h_factors, trade_market
 
 Z = [f"z_{c}" for c in CATEGORY_NAMES]
 ACTIVE_EXCLUDE = {"BN", "IL", "IL+", "NA"}
@@ -147,21 +148,28 @@ def trade_partners(me: str, teams: list, cat_rates: pd.DataFrame, rz: pd.DataFra
     return sorted(out, key=lambda p: -p.fit)
 
 
-def market_value(values: pd.DataFrame, ids: list, replacement: pd.Series) -> float:
-    """What a package is worth to an average team: standard 9-cat value above replacement,
-    best player first, second at 60%. This is the "would anyone accept this" check."""
-    sub = values[values["PLAYER_ID"].isin(ids)].drop_duplicates("PLAYER_ID")
-    if sub.empty:
-        return 0.0
-    repl = float(replacement.reindex(CATEGORY_NAMES).fillna(0).sum())
-    vals = sorted((sub["value"] - repl).clip(lower=0).tolist(), reverse=True)
-    return float(sum(v * (DEPTH ** i) for i, v in enumerate(vals)))
+def market_value(values: pd.DataFrame, ids: list, replacement: pd.Series | None = None,
+                 market: pd.Series | None = None) -> float:
+    """What a package fetches in a trade (``valuation.trade_market``): best player first,
+    second at 60%. This is the "would anyone accept this" check."""
+    market = trade_market(values) if market is None else market
+    vals = sorted((float(market.get(i, 0.0)) for i in set(ids)), reverse=True)
+    return float(sum(v * (DEPTH ** k) for k, v in enumerate(vals)))
 
 
-def fairness(give_mv: float, get_mv: float) -> tuple[float, str]:
-    """Gap as a share of the bigger side, plus a label."""
+def fairness(give_mv: float, get_mv: float, n_give: int = 1, n_get: int = 1) -> tuple[float, str]:
+    """Gap as a share of the bigger side, plus a label.
+
+    In a 2-for-1, the side getting the single best player shouldn't also get a discount
+    (it already wins the roster spot), so its surplus is capped at ``CONSOLIDATION_EDGE``.
+    """
     big = max(give_mv, get_mv, 1e-9)
     gap = (get_mv - give_mv) / big
+    consolidating = n_give > n_get            # you get the best player
+    if consolidating and gap > CONSOLIDATION_EDGE:
+        return gap, "You win this one"
+    if n_get > n_give and gap < -CONSOLIDATION_EDGE:
+        return gap, "You overpay"
     if abs(gap) <= 0.08:
         return gap, "Even trade"
     if abs(gap) <= FAIR_GAP:
@@ -170,6 +178,7 @@ def fairness(give_mv: float, get_mv: float) -> tuple[float, str]:
 
 
 FAIR_GAP = 0.15        # packages within 15% of each other on market value count as fair
+CONSOLIDATION_EDGE = 0.05  # in a 2-for-1, the side getting the best player gets at most a 5% edge
 NEED_FLOOR = 0.5       # needs can tilt a category's weight between 0.5x and 1x, never zero it
 
 
@@ -192,18 +201,19 @@ def suggest_trades(me: str, rosters: pd.DataFrame, values: pd.DataFrame, replace
         r = r[~r["status"].map(is_unavailable)]
     r = r[r["PLAYER_ID"].isin(v.index)]
     repl = replacement.reindex(CATEGORY_NAMES).fillna(0).values
-    repl_total = float(repl.sum())
+    market = trade_market(values)
+    hf = h2h_factors(values).reindex(CATEGORY_NAMES).fillna(1.0).values
 
     def side(team):
         ids = r[r["team_key"] == team]["PLAYER_ID"].tolist()
-        ids = sorted(ids, key=lambda i: -float(v.at[i, "value"]))[:per_side]
+        ids = sorted(ids, key=lambda i: -float(market.get(i, 0.0)))[:per_side]
         z = v.loc[ids, Z].values if ids else np.zeros((0, len(Z)))
-        mv = np.clip(v.loc[ids, "value"].values - repl_total, 0, None) if ids else np.zeros(0)
+        mv = np.array([float(market.get(i, 0.0)) for i in ids])
         return ids, z, mv
 
     def weights(team):
         rates = cat_rates.loc[team] if team in cat_rates.index else None
-        return context_weights(rates, floor=NEED_FLOOR).reindex(CATEGORY_NAMES).values
+        return context_weights(rates, floor=NEED_FLOOR).reindex(CATEGORY_NAMES).values * hf
 
     def pkg(xs):
         xs = sorted(xs, reverse=True)
@@ -230,9 +240,10 @@ def suggest_trades(me: str, rosters: pd.DataFrame, values: pd.DataFrame, replace
                 if len(gs) == 2 and len(ts) == 2:
                     continue                                   # 1-for-1 and 2-for-1 only
                 mv_get = pkg([th_mv[j] for j in ts])
-                gap = abs(mv_get - mv_give) / max(mv_get, mv_give)
-                if gap > FAIR_GAP:
+                signed, label = fairness(mv_give, mv_get, len(gs), len(ts))
+                if label not in ("Even trade", "Fair trade"):
                     continue                                   # not a deal a real manager takes
+                gap = abs(signed)
                 d_me = pkg([theirs_for_me[j] for j in ts]) - pkg([mine_for_me[i] for i in gs])
                 d_th = pkg([mine_for_th[i] for i in gs]) - pkg([theirs_for_th[j] for j in ts])
                 if d_me > 0.15 and d_th > 0.15:
@@ -251,7 +262,7 @@ def suggest_trades(me: str, rosters: pd.DataFrame, values: pd.DataFrame, replace
             tn = [v.at[j, "PLAYER_NAME"] for j in get]
             sell = (f"help in {' and '.join(p.they_need[:2])}" if p.they_need
                     else "a consolidation upgrade" if len(gs) > len(ts) else "added depth")
-            pitch = f"Even on overall value, and it fits both rosters. Pitch it as {sell}."
+            pitch = f"Even on trade value, and it fits both rosters. Pitch it as {sell}."
             ideas.append(TradeIdea(p.team_key, give, get, gn, tn, d_me, d_th, pitch,
                                    pkg([my_mv[i] for i in gs]), pkg([th_mv[j] for j in ts])))
             n_here += 1

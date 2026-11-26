@@ -813,12 +813,14 @@ def _trade_hub(c: dict, me: str, ros: pd.DataFrame, res):
     ui.section("Suggested trades")
     for i, idea in enumerate(ideas):
         st.html(ui.idea_card(idea, NAMES.get(idea.partner, ""), logo(idea.partner),
-                             hub.fairness(idea.give_mv, idea.get_mv)[1]))
+                             hub.fairness(idea.give_mv, idea.get_mv, len(idea.give), len(idea.get))[1]))
         st.button("Open in trade builder", key=f"load_trade_{i}", icon=":material/swap_horiz:",
                   type="tertiary", on_click=_load_trade, args=(idea.partner, idea.give, idea.get))
-    ui.footnote("Every 1-for-1 and 2-for-1 with each team, kept only if both sides are within 15% on overall "
-                "value (the numbers in gray) and both teams improve on their own category needs. The second "
-                "player in a package counts 60%, because starting spots are limited.")
+    ui.footnote("Every 1-for-1 and 2-for-1 with each team, kept only if both sides are within 15% on trade "
+                "value (in gray) and both teams improve on their own category needs. Trade value counts what a "
+                "player is worth to a team built around him (Giannis in a punt-FT% build), discounts noisy H2H "
+                "categories like steals and 3PT%, and pays a premium for stars, so the side getting the best "
+                "player in a 2-for-1 never gets a discount.")
 
 
 def page_trade():
@@ -866,14 +868,15 @@ def page_trade():
     head, _, body = mine.verdict.partition(":")
     give_mv = hub.market_value(res.table, give, res.replacement)
     get_mv = hub.market_value(res.table, get, res.replacement)
-    gap, fair_label = hub.fairness(give_mv, get_mv)
-    if gap < -hub.FAIR_GAP:
+    gap, fair_label = hub.fairness(give_mv, get_mv, len(give), len(get))
+    if fair_label == "You overpay":
         if mine.weighted_delta > 0:
             head = "Ask for more"
-        body = (f" It fits your categories, but you're giving up {abs(gap):.0%} more overall value. "
-                "Ask them to add something." if mine.weighted_delta > 0 else body)
-    elif gap > 2 * hub.FAIR_GAP:
-        body += f". It's lopsided in your favor by {gap:.0%} of overall value, so expect a no."
+        body = (f" It fits your categories, but you're giving up {abs(gap):.0%} more trade value. "
+                "Ask them to add something." if mine.weighted_delta > 0 else
+                f"{body}. You're also giving up {abs(gap):.0%} more trade value.")
+    elif fair_label == "You win this one":
+        body += f". It's lopsided in your favor by {gap:.0%} of trade value, so expect a no."
     elif mine.weighted_delta > 0 and theirs.weighted_delta > 0:
         body += ". Fair on overall value and they come out ahead too, so it should be an easy sell."
     st.html(
@@ -885,7 +888,7 @@ def page_trade():
         f'<div class="n"><div class="k">{e(NAMES[them])}</div><div class="v {ui.sign_class(theirs.weighted_delta)}">'
         f'{signed(theirs.weighted_delta)}</div></div>'
         "</div>"
-        f'<div class="mv">Overall value: you send <b>{give_mv:.1f}</b>, you get <b>{get_mv:.1f}</b> · '
+        f'<div class="mv">Trade value: you send <b>{give_mv:.1f}</b>, you get <b>{get_mv:.1f}</b> · '
         f'{e(fair_label)}</div></div>')
     ui.section("What changes for you, by category")
     chips = []

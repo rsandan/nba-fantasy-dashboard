@@ -87,9 +87,23 @@ matchup using only earlier weeks and reports Brier skill and a reliability curve
 
 ### 4. Trades, profiles and lineups (`fantasy/hub.py`, `fantasy/trade.py`)
 
-- **Fair first:** a suggested trade must be within **15%** on overall value (standard 9-cat value
-  above replacement, second player in a package at 60% because starting spots are limited). This
-  is what stops "two stars for a role player" suggestions.
+- **Trade value is not the 9-cat ranking** (`valuation.trade_market`). Plain z-scores ranked
+  Giannis #28, behind Dyson Daniels, which let the hub call Giannis + Jabari Smith for Daniels
+  fair. Trade value now layers three research-backed adjustments:
+  1. **H2H weekly noise** (the "G-score" idea, Rosenof, arXiv:2307.02188): each category is
+     shrunk by `1/sqrt(1 + (weekly SD / between-player SD)²)`, measured on the league's own pool.
+     On Nov 2026 data: PTS 0.95, REB/AST ~0.89, BLK 0.75, TO 0.73, FT% 0.65, STL 0.61, FG% 0.59,
+     3PT% 0.36. One-category specialists stop looking like stars.
+  2. **Build-around value:** the better of the 9-cat total and the best single-category punt, at
+     95%. That's how managers price Giannis (punt FT%).
+  3. **Star premium:** value above replacement raised to the 1.5 power, then packages count the
+     second player at 60%. One star beats two good players, especially in an 8-team league with a
+     deep waiver wire.
+  Result: Giannis is a top-5 trade asset; Giannis + Jabari for Daniels is flagged as a 63% overpay;
+  Giannis for Daniels + Maxey is close but still short. These cases are regression tests
+  (`tests/test_trade_value.py`) on real per-game stats.
+- **Fair first:** a suggested trade must be within **15%** on trade value, and in a 2-for-1 the side
+  getting the best player can't also get more than a 5% edge.
 - **Then both sides must gain** on their own needs. Categories are weighted by how contested they
   are for that team (`0.5 + 0.5 × 4p(1−p)`), so needs tilt value without erasing a star.
 - Ideas are ranked by the **smaller** of the two gains: the most balanced win-win first. Cards and
@@ -158,7 +172,7 @@ To rebuild by hand: **Actions → refresh-nba-data → Run workflow**, or locall
 ```bash
 pip install -r requirements-dev.txt
 FANTASY_DEMO=1 streamlit run app.py        # no credentials needed
-pytest -q                                  # 72 tests, ~25s
+pytest -q                                  # 76 tests, ~25s
 ```
 
 ### Live mode (Yahoo)
@@ -214,7 +228,7 @@ fantasy/
   demo.py                  synthetic league generator (tests + demo mode)
 scripts/refresh_data.py    builds the NBA snapshots on the data branch
 .github/workflows/         tests, 3-hourly data refresh, keep-alive ping
-tests/                     72 tests: parsers, model skill and calibration, valuation, fair trades,
+tests/                     76 tests: parsers, model skill and calibration, valuation, fair trades,
                            lineup checks, leaderboards, storylines, every tab renders
 ```
 
