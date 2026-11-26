@@ -139,7 +139,9 @@ def streaming_board(free_agents: pd.DataFrame, values: pd.DataFrame, games_left:
     team = fa["TEAM"].fillna(fa["nba_team"])
     fa["games_left"] = team.map(games_left).fillna(0).astype(int)
     repl = replacement if replacement is not None else pd.Series(0.0, index=CATEGORY_NAMES)
-    wz = sum((fa[f"z_{c}"] - repl.get(c, 0.0)) * weights.get(c, 1.0) for c in CATEGORY_NAMES)
+    from .valuation import h2h_factors
+    hf = h2h_factors(values)                    # same H2H weighting as the rankings
+    wz = sum((fa[f"z_{c}"] - repl.get(c, 0.0)) * weights.get(c, 1.0) * hf.get(c, 1.0) for c in CATEGORY_NAMES)
     fa["weighted_per_game"] = wz
     fa["stream_score"] = wz * fa["games_left"]
     cols = ["PLAYER_ID", "name", "TEAM", "eligible_positions", "percent_owned", "status", "games_left",

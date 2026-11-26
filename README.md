@@ -65,6 +65,10 @@ matchup using only earlier weeks and reports Brier skill and a reliability curve
 ### 2. Player values (`fantasy/valuation.py`)
 
 - z-scores against a **replacement-aware pool** (`teams × roster spots`), not all ~550 players.
+- **Weighted for head-to-head** (`h2h_factors`): each category counts by how much it decides
+  weekly matchups, measured on the league's own pool. Rankings, Pickups, the game plan and trades
+  all share this weighting; per-category z columns stay unweighted. `value_players(..., h2h=False)`
+  gives plain 9-cat z.
 - Percentages use **impact**: `(player% − pool%) × attempts`.
 - Early season blends this season with last: `w = GP / (GP + 15)`.
 - Punting removes a category from both the total and pool selection.

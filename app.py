@@ -774,7 +774,9 @@ def _rankings(photos: bool):
         ui.footnote("No players match.")
     more_button("rank_n", n, len(table), 25)
     ui.footnote("Value per game, in z-scores against the players worth rostering in a "
-                f"{META.num_teams}-team league. Shooting percentages count shot volume.")
+                f"{META.num_teams}-team league, weighted for head-to-head: categories that swing a lot week "
+                "to week (3PT%, steals, FG%) count less than steady ones (points, rebounds, assists). "
+                "Shooting percentages count shot volume.")
 
 
 def _roster_options(team_key: str, ros: pd.DataFrame, vals: pd.DataFrame) -> dict:

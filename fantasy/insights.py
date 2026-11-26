@@ -109,8 +109,10 @@ class GamePlan:
     actions: list[Action]
 
 
-def _player_weighted(df: pd.DataFrame, weights: pd.Series, repl: pd.Series) -> pd.Series:
-    return sum((df[f"z_{c}"] - repl.get(c, 0.0)) * weights.get(c, 1.0) for c in CATEGORY_NAMES)
+def _player_weighted(df: pd.DataFrame, weights: pd.Series, repl: pd.Series,
+                     factors: pd.Series | None = None) -> pd.Series:
+    f = factors if factors is not None else pd.Series(1.0, index=CATEGORY_NAMES)
+    return sum((df[f"z_{c}"] - repl.get(c, 0.0)) * weights.get(c, 1.0) * f.get(c, 1.0) for c in CATEGORY_NAMES)
 
 
 def game_plan(me: str, live: pd.DataFrame, model: mm.TeamModel, values: pd.DataFrame | None,
@@ -158,7 +160,8 @@ def game_plan(me: str, live: pd.DataFrame, model: mm.TeamModel, values: pd.DataF
                 m["games_left"] = m["TEAM"].map(games_left).fillna(0)
                 if "status" in m:   # an injured player's remaining games are worth nothing
                     m.loc[m["status"].map(is_unavailable), "games_left"] = 0
-                m["score"] = _player_weighted(m, weights, replacement) * m["games_left"]
+                from .valuation import h2h_factors
+                m["score"] = _player_weighted(m, weights, replacement, h2h_factors(values)) * m["games_left"]
                 drops = m.sort_values("score").head(3)
                 stats = values.set_index("PLAYER_ID")
                 best = None

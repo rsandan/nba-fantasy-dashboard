@@ -8,7 +8,7 @@ import pytest
 from fantasy import demo, nba_data, power, trade, transactions
 from fantasy import matchup_model as mm
 from fantasy.categories import BY_NAME, CATEGORY_NAMES, compare
-from fantasy.valuation import value_players
+from fantasy.valuation import h2h_factors, value_players
 from fantasy.yahoo_client import parse_scoreboard, parse_transactions
 
 
@@ -134,8 +134,12 @@ def test_punts_drop_category_from_total(league):
     full = value_players(players, punts=())
     punted = value_players(players, punts=("FT%",))
     t = punted.table
-    assert np.allclose(t["value"], t[[f"z_{c}" for c in CATEGORY_NAMES if c != "FT%"]].sum(axis=1))
+    kept = [c for c in CATEGORY_NAMES if c != "FT%"]
+    f = h2h_factors(t)                      # value is H2H-weighted by default
+    assert np.allclose(t["value"], sum(t[f"z_{c}"] * f[c] for c in kept))
     assert punted.punts == ("FT%",) and full.pool_size == punted.pool_size
+    plain = value_players(players, punts=("FT%",), h2h=False).table
+    assert np.allclose(plain["value"], plain[[f"z_{c}" for c in kept]].sum(axis=1))
 
 
 # ------------------------------------------------------------------- simulation

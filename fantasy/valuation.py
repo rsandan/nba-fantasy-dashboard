@@ -16,6 +16,9 @@ of that pool's standard deviation.
   end-of-bench players nobody rosters.
 * **Punting**: punted categories are dropped from the total *and* from pool selection,
   so the pool (and therefore every other category's baseline) reflects the build.
+* **Head-to-head weighting** (default): the overall value weights each category by how
+  much it actually decides weekly matchups (``h2h_factors``). Per-category z columns stay
+  unweighted so they still read as "standard deviations above the pool".
 * Replacement level per category is the mean z of the first ~N/10 players just
   outside the pool: roughly what you could pick up on waivers today. The trade
   analyzer uses it to price roster-spot asymmetry in 2-for-1 deals.
@@ -65,6 +68,7 @@ def value_players(
     punts: tuple[str, ...] | list[str] = (),
     min_games: int = 5,
     max_iter: int = 6,
+    h2h: bool = True,
 ) -> ValuationResult:
     """Score players (per-game columns FGM, FGA, FTM, FTA, FG3M, PTS, REB, AST, STL, BLK, TOV)."""
     punts = tuple(p for p in punts if p in CATEGORY_NAMES)
@@ -77,18 +81,26 @@ def value_players(
 
     # Seed the pool with minutes played: a stable, category-neutral first guess.
     pool_mask = df["MIN"].rank(ascending=False, method="first") <= pool_size
+    def weights(mask) -> pd.Series:
+        if not h2h:
+            return pd.Series(1.0, index=Z_COLS)
+        f = h2h_factors(df.assign(in_pool=mask.values))
+        return pd.Series(f.values, index=[f"z_{c}" for c in f.index])
+
     for _ in range(max_iter):
         z = _zscores(df, pool_mask)
-        total = z[active].sum(axis=1)
+        w = weights(pool_mask)
+        total = (z[active] * w[active]).sum(axis=1)
         new_mask = total.rank(ascending=False, method="first") <= pool_size
         if (new_mask == pool_mask).all():
             break
         pool_mask = new_mask
 
     z = _zscores(df, pool_mask)
+    w = weights(pool_mask)
     df = pd.concat([df, z], axis=1)
-    df["value"] = df[active].sum(axis=1)
-    df["value_all9"] = df[Z_COLS].sum(axis=1)
+    df["value"] = (df[active] * w[active]).sum(axis=1)
+    df["value_all9"] = (df[Z_COLS] * w).sum(axis=1)
     # Availability: a player who plays 55 of 82 games delivers ~2/3 of his per-game value
     # over a season. Show both; per-game value drives weekly decisions, adjusted drives drafts.
     if "availability" not in df:
