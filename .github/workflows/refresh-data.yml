@@ -1,0 +1,62 @@
+# Rebuilds the NBA stat snapshots and commits them to the `data` branch.
+# The app reads them from raw.githubusercontent.com, so a page load never waits on
+# stats.nba.com. Committing to `data` (not `main`) means no Render redeploy per refresh.
+name: refresh-nba-data
+
+on:
+  schedule:
+    - cron: "23 */3 * * *"     # every 3 hours
+  workflow_dispatch:
+    inputs:
+      force_boxscores:
+        description: "Skip stats.nba.com and build from cdn.nba.com box scores"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: refresh-nba-data
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Check out the data branch (create it on first run)
+        run: |
+          if git ls-remote --exit-code --heads origin data >/dev/null; then
+            git fetch --depth 1 origin data:data
+            git worktree add databranch data
+          else
+            git worktree add --orphan -b data databranch
+          fi
+
+      - name: Build snapshots
+        run: |
+          python scripts/refresh_data.py --out databranch \
+            ${{ inputs.force_boxscores && '--force-boxscores' || '' }}
+
+      - name: Commit if anything changed
+        working-directory: databranch
+        run: |
+          git add -A
+          if git diff --cached --quiet; then
+            echo "No changes."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "Refresh NBA data $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push origin data

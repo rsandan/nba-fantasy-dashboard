@@ -81,18 +81,23 @@ def _with_retries(fn, attempts: int = 3, base_delay: float = 1.5):
     raise last  # type: ignore[misc]
 
 
-def fetch_player_per_game(season: str, last_n_games: int = 0) -> pd.DataFrame:
-    """Per-game lines for every player in ``season`` (optionally last N games)."""
+def fetch_player_per_game(season: str, last_n_games: int = 0, timeout: int = 20,
+                          attempts: int = 2) -> pd.DataFrame:
+    """Per-game lines for every player in ``season`` (optionally last N games).
+
+    Called by ``scripts/refresh_data.py``, not by the app: stats.nba.com blocks most
+    cloud hosts, so the page reads pre-built snapshots instead (see ``snapshot.py``).
+    """
     from nba_api.stats.endpoints import leaguedashplayerstats
 
     def call():
         return leaguedashplayerstats.LeagueDashPlayerStats(
             season=season, per_mode_detailed="PerGame", last_n_games=last_n_games,
-            season_type_all_star="Regular Season", headers=NBA_HEADERS, timeout=45,
+            season_type_all_star="Regular Season", headers=NBA_HEADERS, timeout=timeout,
         ).get_data_frames()[0]
 
     try:
-        raw = _with_retries(call)
+        raw = _with_retries(call, attempts=attempts)
     except Exception as exc:
         log.warning("nba_api player stats failed for %s: %s", season, exc)
         return pd.DataFrame()
@@ -121,6 +126,11 @@ def blend_seasons(current: pd.DataFrame, prior: pd.DataFrame, k: float = 15.0) -
     with no prior (rookies) use current only; players with no current games (injured,
     or preseason) use prior only, so the draft board works before opening night.
     """
+    if (current is None or current.empty) and (prior is None or prior.empty):
+        # No stats from anywhere. Return a well-formed empty table so pages degrade to
+        # "no player stats yet" instead of crashing on a missing GP column.
+        return pd.DataFrame(columns=["PLAYER_ID", "PLAYER_NAME", "TEAM", "GP", *STAT_COLS,
+                                     "GP_CUR", "GP_TOT", "blend_w", "availability", "name_key"])
     if current is None or current.empty:
         out = prior.copy()
         out["GP_CUR"] = 0.0
@@ -162,16 +172,16 @@ def blend_seasons(current: pd.DataFrame, prior: pd.DataFrame, k: float = 15.0) -
     return out.reset_index().rename(columns={"index": "PLAYER_ID"})
 
 
-def fetch_schedule(season: str) -> pd.DataFrame:
+def fetch_schedule(season: str, timeout: int = 20, attempts: int = 2) -> pd.DataFrame:
     """Full regular-season schedule: one row per game with date, home and away tricodes."""
     from nba_api.stats.endpoints import scheduleleaguev2
 
     def call():
         return scheduleleaguev2.ScheduleLeagueV2(
-            season=season, headers=NBA_HEADERS, timeout=45).get_data_frames()[0]
+            season=season, headers=NBA_HEADERS, timeout=timeout).get_data_frames()[0]
 
     try:
-        raw = _with_retries(call)
+        raw = _with_retries(call, attempts=attempts)
     except Exception as exc:
         log.warning("nba_api schedule failed for %s: %s", season, exc)
         return pd.DataFrame(columns=["game_date", "home", "away"])

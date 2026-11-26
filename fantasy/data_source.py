@@ -12,12 +12,21 @@ from datetime import date, datetime
 
 import pandas as pd
 
-from . import demo, nba_data
+from . import demo, nba_data, snapshot
 from .yahoo_client import LeagueMeta, YahooLeague, authenticate, discover_league
 
 
 def demo_requested() -> bool:
     return os.getenv("FANTASY_DEMO", "").strip().lower() in ("1", "true", "yes")
+
+
+def live_nba_allowed() -> bool:
+    """Opt-in direct stats.nba.com calls when no snapshot exists (e.g. running at home).
+
+    Off by default because cloud hosts get blocked, and a blocked call costs ~10 s per
+    page instead of failing fast.
+    """
+    return os.getenv("NBA_LIVE_FALLBACK", "").strip().lower() in ("1", "true", "yes")
 
 
 @dataclass
@@ -57,10 +66,18 @@ class Source:
         if self.is_demo:
             return self.demo_bundle["players"] if season == nba_data.season_for(self.today()) \
                 else self.demo_bundle["players_prior"]
-        return nba_data.fetch_player_per_game(season, last_n_games)
+        df = snapshot.load_players(season, last_n_games)
+        if df.empty and live_nba_allowed():
+            df = nba_data.fetch_player_per_game(season, last_n_games, timeout=10, attempts=1)
+        return df
 
     def schedule(self, season: str) -> pd.DataFrame:
-        return self.demo_bundle["schedule"] if self.is_demo else nba_data.fetch_schedule(season)
+        if self.is_demo:
+            return self.demo_bundle["schedule"]
+        df = snapshot.load_schedule(season)
+        if df.empty and live_nba_allowed():
+            df = nba_data.fetch_schedule(season, timeout=10, attempts=1)
+        return df
 
     def today(self) -> date:
         """League-local 'today'. The demo league is frozen mid-week so every page has data."""

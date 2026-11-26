@@ -90,12 +90,15 @@ def load_free_agents(key: str) -> pd.DataFrame:
     return SOURCE.free_agents()
 
 
-@st.cache_data(ttl=21600, show_spinner=False)
+# NBA stats come from snapshots refreshed every few hours by a GitHub Action (see
+# fantasy/snapshot.py), so an hour-long cache picks up each refresh without re-reading
+# the CSV on every rerun.
+@st.cache_data(ttl=3600, show_spinner=False)
 def load_players(season: str, last_n: int = 0) -> pd.DataFrame:
     return SOURCE.players(season, last_n)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@st.cache_data(ttl=21600, show_spinner=False)
 def load_schedule(season: str) -> pd.DataFrame:
     return SOURCE.schedule(season)
 
@@ -106,7 +109,7 @@ SEASON = nba_data.season_for(TODAY)
 PRIOR = nba_data.previous_season(SEASON)
 
 
-@st.cache_data(ttl=21600, show_spinner="Loading player stats…")
+@st.cache_data(ttl=3600, show_spinner="Loading player stats…")
 def blended_players(season: str) -> pd.DataFrame:
     return nba_data.blend_seasons(load_players(season), load_players(nba_data.previous_season(season)))
 

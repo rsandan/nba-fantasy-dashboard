@@ -1,0 +1,23 @@
+# Render's free plan sleeps a service after 15 minutes without traffic, and waking it
+# takes about a minute. Pinging every 10 minutes keeps it (and its caches) warm.
+# One always-on free service uses ~744 of the 750 free instance hours a month.
+# GitHub can delay scheduled runs; an external monitor (cron-job.org, UptimeRobot)
+# pinging the same URL is a good belt-and-braces backup.
+name: keep-alive
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Ping the dashboard
+        run: |
+          curl -fsS -m 120 -o /dev/null -w "%{http_code} in %{time_total}s\n" \
+            https://nba-fantasy-dashboard.onrender.com/_stcore/health \
+          || curl -fsS -m 120 -o /dev/null https://nba-fantasy-dashboard.onrender.com/ \
+          || echo "Dashboard didn't answer; it will wake on the next ping."

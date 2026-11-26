@@ -94,6 +94,24 @@ tests/                     46 tests: parsing, math, model skill/calibration, lea
                            every tab renders (mid-season and opening night)
 ```
 
+## How NBA stats load (and why pages are fast)
+
+stats.nba.com blocks or throttles most cloud hosts, including Render, so the app never
+calls it during a page load. Instead:
+
+1. `.github/workflows/refresh-data.yml` runs `scripts/refresh_data.py` every 3 hours.
+   It tries stats.nba.com first and falls back to cdn.nba.com box scores (static JSON,
+   not rate limited), then commits small CSVs to the **`data` branch**.
+2. The app reads those CSVs from raw.githubusercontent.com in about a second
+   (`fantasy/snapshot.py`), with a local `data/` folder as a fallback.
+3. Commits go to `data`, not `main`, so refreshes never trigger a Render redeploy.
+4. `.github/workflows/keep-alive.yml` pings the site every 10 minutes so Render's free
+   plan doesn't put it to sleep.
+
+To rebuild by hand: **Actions -> refresh-nba-data -> Run workflow**. Locally:
+`python scripts/refresh_data.py --out data`. Set `NBA_LIVE_FALLBACK=1` to let the app
+call stats.nba.com directly when no snapshot exists (only useful on a home connection).
+
 ## Running it
 
 ```bash
