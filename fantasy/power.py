@@ -20,13 +20,47 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
-from .categories import CATEGORIES, CATEGORY_NAMES, category_value, compare
+from .categories import BY_NAME, CATEGORIES, CATEGORY_NAMES, category_value, compare
 from .matchup_model import TeamModel, perturbed, simulate_matchup
 
 
 def _week_values(week_df: pd.DataFrame) -> pd.DataFrame:
     vals = {c.name: week_df.apply(lambda r, c=c: category_value(r, c), axis=1) for c in CATEGORIES}
     return pd.DataFrame(vals).set_axis(list(week_df["team_key"]), axis=0)
+
+
+def season_ranks(team_weeks: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Each team's season-to-date value and league rank in every category.
+
+    Uses completed weeks. Percentages are total makes / total attempts; counting stats
+    are per-week averages so a team with an extra week isn't favored. Rank 1 is best
+    (fewest for TO). Ties share the better rank (method="min").
+    """
+    if team_weeks is None or team_weeks.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    done = team_weeks[team_weeks["status"] == "postevent"]
+    if done.empty:
+        return pd.DataFrame(), pd.DataFrame()
+    cols = [c for c in ["FGM", "FGA", "FTM", "FTA", "FG3M", "FG3A", "PTS", "REB", "AST", "STL", "BLK", "TOV"]
+            if c in done]
+    tot = done.groupby("team_key")[cols].sum()
+    weeks = done.groupby("team_key")["week"].nunique()
+    vals = {}
+    for c in CATEGORIES:
+        if c.kind == "pct":
+            if c.makes not in tot or c.attempts not in tot:
+                continue
+            vals[c.name] = tot[c.makes] / tot[c.attempts].where(tot[c.attempts] > 0)
+        elif c.stat in tot:
+            vals[c.name] = tot[c.stat] / weeks
+    values = pd.DataFrame(vals)
+    shown = values.copy()  # Yahoo settles percentages at 3 decimals: .8021 and .8017 are a tie
+    for n in shown:
+        if BY_NAME[n].kind == "pct":
+            shown[n] = shown[n].round(BY_NAME[n].decimals)
+    ranks = pd.DataFrame({
+        n: shown[n].rank(ascending=not BY_NAME[n].higher_is_better, method="min") for n in values})
+    return values, ranks
 
 
 def head_to_head(v: pd.DataFrame, a: str, b: str) -> dict[str, float]:

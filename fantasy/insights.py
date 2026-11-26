@@ -566,6 +566,27 @@ def _streaks(tw: pd.DataFrame) -> dict:
     return out
 
 
+def _fmt_cat(cat: str, v: float) -> str:
+    if cat.endswith("%"):
+        return f"{v:.3f}".lstrip("0")
+    return f"{v:.0f}/wk"
+
+
+def _rank_text(cat: str, r: int, v: float, n: int, tied: bool = False) -> str:
+    """'#2 in the league in FT% (.812)'. Turnovers read as fewest/most so #1 is never ambiguous."""
+    pos = f"T-#{r}" if tied else f"#{r}"
+    val = _fmt_cat(cat, v)
+    if cat == "TO":
+        if r == 1:
+            return f"{'Tied for fewest' if tied else 'Fewest'} turnovers in the league ({val})"
+        if r == n:
+            return f"{'Tied for most' if tied else 'Most'} turnovers in the league ({val})"
+        return f"{pos} fewest turnovers in the league ({val})" if r <= n // 2 else f"{pos} of {n} in turnovers ({val}, fewer is better)"
+    if r <= n // 2:
+        return f"{pos} in the league in {cat} ({val})"
+    return f"{pos} of {n} in {cat} ({val})"
+
+
 def team_report(names: dict, tx: pd.DataFrame, pidx: dict, now: pd.Timestamp, win_odds: dict,
                 tw: pd.DataFrame, cat_rates: pd.DataFrame | None, rosters: pd.DataFrame | None,
                 days: int = 14) -> list[TeamNote]:
@@ -671,16 +692,18 @@ def team_report(names: dict, tx: pd.DataFrame, pidx: dict, now: pd.Timestamp, wi
                 who = grp["name"].iloc[0]
                 bad[t].append((1.6 + 0.4 * n, f"{who} out, not on IL" if n == 1 else f"{n} injured players taking roster spots"))
 
-    # Fallbacks: best and worst category from results
-    if cat_rates is not None and not cat_rates.empty:
-        rk = cat_rates.rank(ascending=False, method="min")
+    # Fallbacks: best and worst category, ranked on actual season-to-date stats
+    from .power import season_ranks
+    values, rk = season_ranks(tw)
+    if not rk.empty:
         n = len(rk)
         for t in names:
-            if t not in rk.index:
+            if t not in rk.index or rk.loc[t].isna().all():
                 continue
-            best, worst = rk.loc[t].idxmin(), rk.loc[t].idxmax()
-            good[t].append((0.5, f"#{int(rk.at[t, best])} in the league in {best}"))
-            bad[t].append((0.5, f"#{int(rk.at[t, worst])} of {n} in {worst}"))
+            row = rk.loc[t]
+            best, worst = row.idxmin(), row.idxmax()
+            good[t].append((0.5, _rank_text(best, int(row[best]), values.at[t, best], n, tied=(rk[best] == row[best]).sum() > 1)))
+            bad[t].append((0.5, _rank_text(worst, int(row[worst]), values.at[t, worst], n, tied=(rk[worst] == row[worst]).sum() > 1)))
 
     out = []
     for t in names:

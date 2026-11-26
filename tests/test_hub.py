@@ -99,3 +99,20 @@ def test_team_report_gives_every_team_one_good_and_one_bad(ctx):
                                  now, {}, tw, ctx["rates"], ctx["ros"])
     assert {n.team_key for n in notes} == set(ctx["names"])
     assert all(n.good and n.bad for n in notes)
+
+
+def test_season_ranks_use_real_stats_and_flag_ties():
+    import pandas as pd
+    from fantasy.power import season_ranks
+    from fantasy.insights import _rank_text
+    rows = []
+    for t, (ftm, fta, tov, pts) in {"a": (80, 100, 40, 500), "b": (802, 1000, 60, 400),
+                                    "c": (8017, 10000, 50, 450), "d": (70, 100, 70, 300)}.items():
+        rows.append(dict(week=1, team_key=t, status="postevent", FGM=1, FGA=2, FTM=ftm, FTA=fta,
+                         FG3M=1, FG3A=3, PTS=pts, REB=1, AST=1, STL=1, BLK=1, TOV=tov))
+    v, r = season_ranks(pd.DataFrame(rows))
+    assert r.at["b", "FT%"] == r.at["c", "FT%"] == 1          # .802 vs .8017 tie at Yahoo's precision
+    assert r.at["a", "TO"] == 1 and r.at["d", "TO"] == 4      # fewest turnovers is best
+    assert _rank_text("FT%", 1, v.at["b", "FT%"], 4, tied=True) == "T-#1 in the league in FT% (.802)"
+    assert _rank_text("TO", 1, 40, 4).startswith("Fewest turnovers")
+    assert _rank_text("TO", 4, 70, 4).startswith("Most turnovers")
