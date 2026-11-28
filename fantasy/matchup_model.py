@@ -43,34 +43,74 @@ import pandas as pd
 
 import zlib
 
-from .categories import CATEGORIES, CATEGORY_NAMES, compare
+from .categories import ADDITIVE_COLS, active, cats, cat_names, compare
 
+# Shooting categories are modeled as attempts per game x make rate, so a hot shooting
+# week and a high-volume week are different things. Everything else is a per-game rate.
+SHOOTING = {"FGM": ("FGA", "FGP"), "FTM": ("FTA", "FTP"), "FG3M": ("FG3A", "FG3P")}
+PCT_COMPONENTS = {p: (m, a) for m, (a, p) in SHOOTING.items()}
+# Love Island's 9 categories need exactly these 12; other leagues need a subset or other
+# counts (3PTM alone, FGM, A/T = AST and TOV, points). See ``components_for``.
 COMPONENTS = ["FGA", "FGP", "FTA", "FTP", "FG3A", "FG3P", "PTS", "REB", "AST", "STL", "BLK", "TOV"]
-PCT_COMPONENTS = {"FGP": ("FGM", "FGA"), "FTP": ("FTM", "FTA"), "FG3P": ("FG3M", "FG3A")}
-_IDX = {c: i for i, c in enumerate(COMPONENTS)}
 # Weakly-informative fallback noise (coefficient of variation per component) used only
 # when there are too few completed weeks to estimate a covariance (preseason / week 1).
 _FALLBACK_CV = {"FGA": 0.08, "FGP": 0.05, "FTA": 0.15, "FTP": 0.07, "FG3A": 0.12, "FG3P": 0.08, "PTS": 0.08,
-                "REB": 0.08, "AST": 0.10, "STL": 0.18, "BLK": 0.25, "TOV": 0.12}
+                "REB": 0.08, "AST": 0.10, "STL": 0.18, "BLK": 0.25, "TOV": 0.12,
+                "FGM": 0.09, "FTM": 0.15, "FG3M": 0.15}
+# A generic rostered player-game, for preseason and for components a league doesn't report.
+_BASE = {"FGA": 8.4, "FGP": 0.475, "FTA": 2.4, "FTP": 0.785, "FG3A": 3.8, "FG3P": 0.36, "PTS": 11.8,
+         "REB": 4.6, "AST": 2.8, "STL": 0.85, "BLK": 0.55, "TOV": 1.45, "FGM": 4.0, "FTM": 1.9,
+         "FG3M": 1.37}
 
 
-def team_week_rates(tw: pd.DataFrame) -> pd.DataFrame:
-    """Per-game component rates for team-weeks with at least one game played."""
+def components_for(scoring=None) -> list[str]:
+    """Model components the active (or given) scoring needs, in a stable order.
+
+    Shooting percentages need attempts + make rate. Counting stats need their own rate,
+    unless they're already implied (3PTM is 3PA x 3P% when 3PT% is scored too).
+    """
+    scoring = scoring or active()
+    shooting, counts = set(), set()
+    for c in scoring.categories:
+        if c.kind == "pct" and c.is_shooting:
+            shooting.add(c.makes)
+        else:
+            counts.update(c.columns)
+    comps: list[str] = []
+    for m in ("FGM", "FTM", "FG3M"):
+        if m in shooting:
+            comps += list(SHOOTING[m])
+    implied = {m for m in shooting} | {SHOOTING[m][0] for m in shooting}
+    comps += [c for c in ADDITIVE_COLS if c in counts and c not in implied]
+    return comps
+
+
+def team_week_rates(tw: pd.DataFrame, comps: list[str] | None = None) -> pd.DataFrame:
+    """Per-game component rates for team-weeks with at least one game played.
+
+    A component the league never reports (e.g. 3PA in a 3PTM league) comes back as NaN
+    columns; ``fit_team_model`` fills those from roster priors.
+    """
+    comps = comps or components_for()
     df = tw[tw["games"].fillna(0) > 0].copy()
     g = df["games"]
     out = pd.DataFrame({"team_key": df["team_key"], "week": df["week"], "games": g})
-    for c in ("FGA", "FTA", "FG3A", "PTS", "REB", "AST", "STL", "BLK", "TOV"):
-        out[c] = df[c] / g
-    for pc, (m, a) in PCT_COMPONENTS.items():
-        out[pc] = np.where(df[a] > 0, df[m] / df[a].where(df[a] > 0, 1), np.nan)
-    pcts = list(PCT_COMPONENTS)
-    out[pcts] = out[pcts].fillna(out[pcts].mean())
+    for c in comps:
+        if c in PCT_COMPONENTS:
+            m, a = PCT_COMPONENTS[c]
+            if m in df and a in df:
+                out[c] = np.where(df[a] > 0, df[m] / df[a].where(df[a] > 0, 1), np.nan)
+                out[c] = out[c].fillna(out[c].mean())
+            else:
+                out[c] = np.nan
+        else:
+            out[c] = df[c] / g if c in df else np.nan
     return out.reset_index(drop=True)
 
 
 @dataclass
 class TeamModel:
-    mu: pd.DataFrame                       # team_key x COMPONENTS
+    mu: pd.DataFrame                       # team_key x components
     cov: np.ndarray                        # K x K covariance at G_ref games
     g_ref: float                           # reference games per week
     games_per_week: pd.Series              # typical games per week, by team
@@ -79,6 +119,7 @@ class TeamModel:
     diagnostics: dict = field(default_factory=dict)
     n_eff: pd.Series | None = None         # recency-weighted weeks of evidence, by team
     prior_weeks: float = 3.0
+    components: list = field(default_factory=lambda: list(COMPONENTS))
 
     def mean_uncertainty_scale(self, team: str) -> float:
         """Posterior variance of a team's mean rate, as a multiple of the weekly covariance
@@ -100,50 +141,60 @@ def fit_team_model(
 ) -> TeamModel:
     """Fit on completed team-weeks (``status == 'postevent'``)."""
     hist = history[history["status"] == "postevent"] if "status" in history else history
-    rates = team_week_rates(hist)
+    comps = components_for()
+    rates = team_week_rates(hist, comps)
     teams = list(teams) if teams is not None else sorted(history["team_key"].dropna().unique())
+    if priors is not None and not priors.empty:
+        priors = priors.reindex(columns=comps)
+    base = pd.Series({c: _BASE[c] for c in comps})
 
     if rates.empty:
         # Preseason: no league history. Fall back to priors or a neutral generic team.
-        base = (priors.mean() if priors is not None and not priors.empty
-                else pd.Series({"FGA": 8.4, "FGP": 0.475, "FTA": 2.4, "FTP": 0.785, "FG3A": 3.8, "FG3P": 0.36,
-                                "PTS": 11.8, "REB": 4.6, "AST": 2.8, "STL": 0.85, "BLK": 0.55,
-                                "TOV": 1.45}))
-        mu = pd.DataFrame([priors.loc[t] if priors is not None and t in priors.index else base
-                           for t in teams], index=teams)[COMPONENTS]
-        sd = np.array([base[c] * _FALLBACK_CV[c] for c in COMPONENTS])
-        return TeamModel(mu, np.diag(sd ** 2), 32.0, pd.Series(32.0, index=teams), base[COMPONENTS],
-                         0, {"cov_source": "fallback"}, pd.Series(0.0, index=teams), prior_weeks)
+        if priors is not None and not priors.empty:
+            base = priors.mean().fillna(base)
+        mu = pd.DataFrame([priors.loc[t].fillna(base) if priors is not None and t in priors.index else base
+                           for t in teams], index=teams)[comps]
+        sd = np.array([base[c] * _FALLBACK_CV[c] for c in comps])
+        return TeamModel(mu, np.diag(sd ** 2) + np.eye(len(comps)) * 1e-9, 32.0, pd.Series(32.0, index=teams),
+                         base[comps], 0, {"cov_source": "fallback"}, pd.Series(0.0, index=teams),
+                         prior_weeks, comps)
+
+    # Components the league never reports carry no signal in its scoreboards. Stand in
+    # roster-based rates (or a generic player) with no week-to-week noise of their own.
+    unreported = [c for c in comps if rates[c].isna().all()]
+    for c in unreported:
+        fill = priors[c] if priors is not None and not priors.empty else pd.Series(dtype=float)
+        rates[c] = rates["team_key"].map(fill).fillna(fill.mean() if not fill.empty else base[c]).fillna(base[c])
 
     last_week = rates["week"].max()
     rates["w"] = 0.5 ** ((last_week - rates["week"]) / half_life)
     g_ref = float(rates["games"].median())
-    league_mean = pd.Series(np.average(rates[COMPONENTS], axis=0, weights=rates["w"]), index=COMPONENTS)
+    league_mean = pd.Series(np.average(rates[comps], axis=0, weights=rates["w"]), index=comps)
     if priors is not None and not priors.empty:
         # Roster projections are per *rostered* player-game; Yahoo rates are per *started*
         # player-game (benches and rest days differ). Rescale so the priors' league mean
         # matches the observed league mean and only the between-team differences carry over.
-        priors = priors[COMPONENTS] * (league_mean / priors[COMPONENTS].mean())
+        priors = priors.fillna(league_mean) * (league_mean / priors.fillna(league_mean).mean())
 
     mu_rows, resid, n_eff = {}, [], {}
     for t in teams:
         r = rates[rates["team_key"] == t]
-        prior = priors.loc[t][COMPONENTS] if priors is not None and t in priors.index else league_mean
+        prior = priors.loc[t][comps] if priors is not None and t in priors.index else league_mean
         if r.empty:
             mu_rows[t] = prior
             continue
         wsum = r["w"].sum()
         n_eff[t] = float(wsum)
-        xbar = pd.Series(np.average(r[COMPONENTS], axis=0, weights=r["w"]), index=COMPONENTS)
+        xbar = pd.Series(np.average(r[comps], axis=0, weights=r["w"]), index=comps)
         mu_rows[t] = (wsum * xbar + prior_weeks * prior) / (wsum + prior_weeks)
         if len(r) >= 2:
-            raw_mean = r[COMPONENTS].mean()
+            raw_mean = r[comps].mean()
             scale = np.sqrt(r["games"].values / g_ref)[:, None]
-            e = (r[COMPONENTS].values - raw_mean.values) * scale
+            e = (r[comps].values - raw_mean.values) * scale
             resid.append(e * np.sqrt(len(r) / (len(r) - 1)))  # small-sample dof correction
-    mu = pd.DataFrame(mu_rows).T[COMPONENTS]
+    mu = pd.DataFrame(mu_rows).T[comps]
 
-    K = len(COMPONENTS)
+    K = len(comps)
     n_resid = sum(len(e) for e in resid)
     if n_resid >= 2 * K:
         E = np.vstack(resid)
@@ -151,14 +202,15 @@ def fit_team_model(
         cov = (1 - cov_shrink) * cov + cov_shrink * np.diag(np.diag(cov))
         source = f"pooled residuals (n={n_resid})"
     else:
-        cov = np.diag([(league_mean[c] * _FALLBACK_CV[c]) ** 2 for c in COMPONENTS])
+        cov = np.diag([(league_mean[c] * _FALLBACK_CV[c]) ** 2 for c in comps])
         source = "fallback (too few weeks for covariance)"
     cov = cov + np.eye(K) * 1e-9  # guarantee positive-definite for Cholesky
 
     gpw = hist.groupby("team_key")["games"].median().reindex(teams).fillna(g_ref)
     return TeamModel(mu, cov, g_ref, gpw, league_mean, int(rates["week"].nunique()),
-                     {"cov_source": source, "half_life": half_life, "prior_weeks": prior_weeks},
-                     pd.Series(n_eff).reindex(teams).fillna(0.0), prior_weeks)
+                     {"cov_source": source, "half_life": half_life, "prior_weeks": prior_weeks,
+                      "unreported": unreported},
+                     pd.Series(n_eff).reindex(teams).fillna(0.0), prior_weeks, comps)
 
 
 def perturbed(model: TeamModel, rng: np.random.Generator) -> TeamModel:
@@ -167,11 +219,12 @@ def perturbed(model: TeamModel, rng: np.random.Generator) -> TeamModel:
     L = np.linalg.cholesky(model.cov)
     mu = model.mu.copy()
     for t in mu.index:
-        shift = L @ rng.standard_normal(len(COMPONENTS)) * np.sqrt(model.mean_uncertainty_scale(t))
+        shift = L @ rng.standard_normal(len(model.components)) * np.sqrt(model.mean_uncertainty_scale(t))
         mu.loc[t] = mu.loc[t].values + shift
-    mu[list(PCT_COMPONENTS)] = mu[list(PCT_COMPONENTS)].clip(0, 1)
+    pcts = [c for c in model.components if c in PCT_COMPONENTS]
+    mu[pcts] = mu[pcts].clip(0, 1)
     out = TeamModel(mu, model.cov, model.g_ref, model.games_per_week, model.league_mean,
-                    model.n_weeks, model.diagnostics, model.n_eff, model.prior_weeks)
+                    model.n_weeks, model.diagnostics, model.n_eff, model.prior_weeks, model.components)
     out.n_eff = pd.Series(1e9, index=mu.index)  # strength already drawn: no extra mean noise
     return out
 
@@ -180,38 +233,43 @@ def perturbed(model: TeamModel, rng: np.random.Generator) -> TeamModel:
 def _simulate_totals(model: TeamModel, team: str, current: dict, n_rem: float,
                      n_sims: int, rng: np.random.Generator) -> dict[str, np.ndarray]:
     """Simulated end-of-week additive totals for one team."""
-    cur = {k: float(current.get(k, 0.0) or 0.0) for k in
-           ("FGM", "FGA", "FTM", "FTA", "FG3M", "FG3A", "PTS", "REB", "AST", "STL", "BLK", "TOV")}
+    cur = {k: float(current.get(k, 0.0) or 0.0) for k in ADDITIVE_COLS}
+    cur = {k: (0.0 if v != v else v) for k, v in cur.items()}
     out = {k: np.full(n_sims, v) for k, v in cur.items()}
+    comps = model.components
     if n_rem and n_rem > 0:
         # Two noise sources, same covariance shape: week-to-week variation of a per-game
         # average over n_rem games, plus uncertainty about the team's true mean. Omitting
         # the second makes early-season probabilities overconfident.
         scale = model.g_ref / n_rem + model.mean_uncertainty_scale(team)
         L = np.linalg.cholesky(model.cov * scale)
-        draws = rng.standard_normal((n_sims, len(COMPONENTS))) @ L.T + model.mu.loc[team].values
-        d = {c: draws[:, _IDX[c]] for c in COMPONENTS}
-        fga = np.rint(np.clip(d["FGA"], 0, None) * n_rem)
-        fta = np.rint(np.clip(d["FTA"], 0, None) * n_rem)
-        out["FGA"] += fga
-        out["FTA"] += fta
-        out["FGM"] += np.rint(fga * np.clip(d["FGP"], 0, 1))
-        out["FTM"] += np.rint(fta * np.clip(d["FTP"], 0, 1))
-        fg3a = np.minimum(np.rint(np.clip(d["FG3A"], 0, None) * n_rem), fga)
-        out["FG3A"] += fg3a
-        out["FG3M"] += np.rint(fg3a * np.clip(d["FG3P"], 0, 1))
-        for c in ("PTS", "REB", "AST", "STL", "BLK", "TOV"):
+        draws = rng.standard_normal((n_sims, len(comps))) @ L.T + model.mu.loc[team, comps].values
+        d = {c: draws[:, i] for i, c in enumerate(comps)}
+        att = {}
+        for m, (a, p) in SHOOTING.items():
+            if a in d and p in d:
+                n_att = np.rint(np.clip(d[a], 0, None) * n_rem)
+                if a == "FG3A" and "FGA" in att:
+                    n_att = np.minimum(n_att, att["FGA"])
+                att[a] = n_att
+                out[a] += n_att
+                out[m] += np.rint(n_att * np.clip(d[p], 0, 1))
+        for c in comps:
+            if c in PCT_COMPONENTS or c in att:
+                continue
             out[c] += np.rint(np.clip(d[c], 0, None) * n_rem)
     return out
 
 
 def _category_arrays(t: dict[str, np.ndarray]) -> dict[str, np.ndarray]:
     vals = {}
-    for cat in CATEGORIES:
+    for cat in cats():
         if cat.kind == "pct":
             att = t[cat.attempts]
             with np.errstate(invalid="ignore", divide="ignore"):
                 vals[cat.name] = np.round(np.where(att > 0, t[cat.makes] / att, np.nan), cat.decimals)
+        elif cat.kind == "points":
+            vals[cat.name] = np.round(sum(t[c] * w for c, w in cat.weights), cat.decimals)
         else:
             vals[cat.name] = t[cat.stat]
     return vals
@@ -257,16 +315,16 @@ def simulate_matchup(model: TeamModel, team_a: str, team_b: str,
     gb = model.games_per_week.get(team_b, model.g_ref) if games_b is None else games_b
     ta = _category_arrays(_simulate_totals(model, team_a, current_a or {}, ga, n_sims, rng))
     tb = _category_arrays(_simulate_totals(model, team_b, current_b or {}, gb, n_sims, rng))
-    res = {c.name: _compare_arrays(ta[c.name], tb[c.name], c.higher_is_better) for c in CATEGORIES}
-    R = np.column_stack([res[c] for c in CATEGORY_NAMES])
+    res = {c.name: _compare_arrays(ta[c.name], tb[c.name], c.higher_is_better) for c in cats()}
+    R = np.column_stack([res[c] for c in cat_names()])
     cats_a = (R == 1).sum(1)
     cats_b = (R == 0).sum(1)
     ties = (R == 0.5).sum(1)
     return MatchupSim(
         team_a, team_b,
-        pd.Series({c: res[c].mean() for c in CATEGORY_NAMES}),
-        pd.Series({c: np.nanmedian(ta[c]) for c in CATEGORY_NAMES}),
-        pd.Series({c: np.nanmedian(tb[c]) for c in CATEGORY_NAMES}),
+        pd.Series({c: res[c].mean() for c in cat_names()}),
+        pd.Series({c: np.nanmedian(ta[c]) for c in cat_names()}),
+        pd.Series({c: np.nanmedian(tb[c]) for c in cat_names()}),
         float((cats_a > cats_b).mean()), float((cats_a == cats_b).mean()),
         float((cats_a < cats_b).mean()), float((cats_a + 0.5 * ties).mean()),
         cats_a, cats_b, ties,
@@ -296,7 +354,7 @@ def live_matchups(model: TeamModel, week_rows: pd.DataFrame, n_sims: int = 4000)
 # ---------------------------------------------------------------------- backtest
 def _actual_category_results(a: pd.Series, b: pd.Series) -> dict[str, float]:
     from .categories import category_value
-    return {c.name: compare(category_value(a, c), category_value(b, c), c) for c in CATEGORIES}
+    return {c.name: compare(category_value(a, c), category_value(b, c), c) for c in cats()}
 
 
 def _empirical_baseline(hist: pd.DataFrame, ta: str, tb: str) -> dict[str, float]:
@@ -305,9 +363,9 @@ def _empirical_baseline(hist: pd.DataFrame, ta: str, tb: str) -> dict[str, float
     from .categories import category_value
     ra, rb = hist[hist["team_key"] == ta], hist[hist["team_key"] == tb]
     if ra.empty or rb.empty:
-        return {c: 0.5 for c in CATEGORY_NAMES}
+        return {c: 0.5 for c in cat_names()}
     out = {}
-    for c in CATEGORIES:
+    for c in cats():
         va = [category_value(r, c) for _, r in ra.iterrows()]
         vb = [category_value(r, c) for _, r in rb.iterrows()]
         out[c.name] = float(np.mean([compare(x, y, c) for x in va for y in vb]))
@@ -339,7 +397,7 @@ def backtest(team_weeks: pd.DataFrame, min_train_weeks: int = 3, n_sims: int = 2
                                    seed=int(w) * 1000 + len(match_rows))
             actual = _actual_category_results(a, b)
             base = _empirical_baseline(hist, a["team_key"], b["team_key"])
-            for c in CATEGORY_NAMES:
+            for c in cat_names():
                 for flip in (False, True):  # both perspectives -> symmetric calibration
                     p, pb, y = sim.cat_prob[c], base[c], actual[c]
                     if flip:
@@ -352,7 +410,7 @@ def backtest(team_weeks: pd.DataFrame, min_train_weeks: int = 3, n_sims: int = 2
             match_rows.append({"week": w, "matchup_id": mid, "team_a": a["team_key"],
                                "team_b": b["team_key"], "p_win": sim.p_win + 0.5 * sim.p_tie,
                                "y": y_m, "exp_cats": sim.exp_cats_a,
-                               "actual_cats": won + 0.5 * (9 - won - lost)})
+                               "actual_cats": won + 0.5 * (len(cat_names()) - won - lost)})
     cats, matches = pd.DataFrame(cat_rows), pd.DataFrame(match_rows)
     return {"categories": cats, "matchups": matches, "metrics": _metrics(cats, matches),
             "calibration": calibration_table(cats) if not cats.empty else pd.DataFrame()}
@@ -402,21 +460,24 @@ def roster_priors(rosters: pd.DataFrame, players: pd.DataFrame) -> pd.DataFrame:
     per-game table (blended season). Each player is weighted by availability x minutes,
     a proxy for how many of the team's started games he'll fill.
     """
+    comps = components_for()
     if rosters is None or rosters.empty or "PLAYER_ID" not in rosters:
-        return pd.DataFrame(columns=COMPONENTS)
+        return pd.DataFrame(columns=comps)
     avail = players["availability"] if "availability" in players else 1.0
     p = players.assign(_w=avail * players["MIN"].clip(lower=1))
     m = rosters.dropna(subset=["PLAYER_ID"]).merge(p, on="PLAYER_ID", how="inner")
     if m.empty:
-        return pd.DataFrame(columns=COMPONENTS)
+        return pd.DataFrame(columns=comps)
     rows = {}
     for team, g in m.groupby("team_key"):
         w = g["_w"] / g["_w"].sum()
-        tot = {c: float((g[c] * w).sum()) for c in ("FGM", "FGA", "FTM", "FTA", "FG3M", "FG3A", "PTS",
-                                                    "REB", "AST", "STL", "BLK", "TOV")}
-        rows[team] = {"FGA": tot["FGA"], "FGP": tot["FGM"] / max(tot["FGA"], 1e-9), "FTA": tot["FTA"],
-                      "FTP": tot["FTM"] / max(tot["FTA"], 1e-9), "FG3A": tot["FG3A"],
-                      "FG3P": tot["FG3M"] / max(tot["FG3A"], 1e-9), "PTS": tot["PTS"],
-                      "REB": tot["REB"], "AST": tot["AST"], "STL": tot["STL"], "BLK": tot["BLK"],
-                      "TOV": tot["TOV"]}
-    return pd.DataFrame(rows).T[COMPONENTS]
+        tot = {c: float((g[c] * w).sum()) for c in ADDITIVE_COLS}
+        row = {}
+        for c in comps:
+            if c in PCT_COMPONENTS:
+                mk, at = PCT_COMPONENTS[c]
+                row[c] = tot[mk] / max(tot[at], 1e-9)
+            else:
+                row[c] = tot[c]
+        rows[team] = row
+    return pd.DataFrame(rows).T[comps]

@@ -337,6 +337,22 @@ button[data-variant="segmented_control"] p { font-size:13px !important; font-wei
 button[data-variant="segmented_control"][aria-checked="true"] { background:var(--seg) !important;
   box-shadow:0 3px 8px rgba(0,0,0,.12), 0 3px 1px rgba(0,0,0,.04) !important; }
 button[data-variant="segmented_control"][aria-checked="true"] p { font-weight:600; }
+/* sign in / league picker */
+.yahoo-btn { display:flex; align-items:center; justify-content:center; gap:8px; width:100%; box-sizing:border-box;
+  background:#6001d2; color:#fff !important; text-decoration:none !important; font-weight:600; font-size:17px;
+  border-radius:14px; padding:14px 16px; }
+.yahoo-btn b { font-weight:800; letter-spacing:-.3px; }
+.landing { background:var(--card); border-radius:22px; padding:22px 20px; border:.5px solid var(--edge); }
+.landing .k { font-size:13px; font-weight:600; color:var(--blue); letter-spacing:.4px; text-transform:uppercase; }
+.landing .t { font-size:24px; font-weight:700; line-height:1.15; margin:6px 0 8px; color:var(--label); }
+.landing p { color:var(--label2); font-size:15px; line-height:1.4; margin:0 0 4px; }
+.landing ul { margin:10px 0 0; padding-left:18px; color:var(--label); font-size:15px; line-height:1.5; }
+.fx-note { font-size:14px; color:var(--label2); background:var(--fill2); border-radius:12px; padding:10px 12px; }
+.fx-note.err { color:var(--red); background:color-mix(in srgb, var(--red) 10%, transparent); }
+.hero .big.wide { font-size:40px; letter-spacing:-1.5px; }
+.lg-now { font-size:15px; font-weight:600; color:var(--label); }
+.lg-now span { display:block; font-size:13px; font-weight:400; color:var(--label2); margin-top:2px; }
+.st-key-cookiejar { display:none; }
 </style>
 """
 
@@ -409,6 +425,15 @@ def large_title(title: str, sub: str = "", live: bool = False) -> str:
     dot = '<span class="live"><i></i>Live</span> · ' if live else ""
     s = f'<div class="sub">{dot}{sub}</div>' if sub or live else ""
     return f'<div class="lt"><div class="h1">{e(title)}</div>{s}</div>'
+
+
+def yahoo_button(url: str, label: str = "Sign in with Yahoo") -> str:
+    """Same-tab link (Streamlit strips target=, which is what we want on iPhone)."""
+    return f'<a class="yahoo-btn" href="{e(url)}">{e(label)}</a>'
+
+
+def note(text: str, error: bool = False) -> str:
+    return f'<div class="fx-note{" err" if error else ""}">{e(text)}</div>'
 
 
 def section(title: str) -> None:

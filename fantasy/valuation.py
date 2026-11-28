@@ -1,4 +1,4 @@
-"""Player valuation for 9-cat: replacement-aware z-scores with punt support.
+"""Player valuation for category and points leagues: replacement-aware z-scores with punt support.
 
 Method
 ------
@@ -30,9 +30,8 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .categories import CATEGORIES, CATEGORY_NAMES
+from .categories import YAHOO_DEFAULT_POINTS, cats, cat_names, z_cols
 
-Z_COLS = [f"z_{c}" for c in CATEGORY_NAMES]
 
 
 @dataclass
@@ -46,7 +45,7 @@ class ValuationResult:
 def _zscores(df: pd.DataFrame, pool_mask: pd.Series) -> pd.DataFrame:
     pool = df[pool_mask]
     z = pd.DataFrame(index=df.index)
-    for cat in CATEGORIES:
+    for cat in cats():
         if cat.kind == "pct":
             pool_pct = pool[cat.makes].sum() / max(pool[cat.attempts].sum(), 1e-9)
             player_pct = np.where(df[cat.attempts] > 0, df[cat.makes] / df[cat.attempts].where(df[cat.attempts] > 0, 1), pool_pct)
@@ -55,10 +54,18 @@ def _zscores(df: pd.DataFrame, pool_mask: pd.Series) -> pd.DataFrame:
             sd = pool_impact.std(ddof=0)
             z[f"z_{cat.name}"] = (impact - pool_impact.mean()) / (sd if sd > 0 else 1.0)
         else:
-            mu, sd = pool[cat.stat].mean(), pool[cat.stat].std(ddof=0)
-            val = (df[cat.stat] - mu) / (sd if sd > 0 else 1.0)
+            col = _stat_series(df, cat)
+            mu, sd = col[pool_mask].mean(), col[pool_mask].std(ddof=0)
+            val = (col - mu) / (sd if sd > 0 else 1.0)
             z[f"z_{cat.name}"] = val if cat.higher_is_better else -val
     return z
+
+
+def _stat_series(df: pd.DataFrame, cat) -> pd.Series:
+    """Per-game value of a count or points category."""
+    if cat.kind == "points":
+        return sum(df[c].astype(float) * w for c, w in cat.weights)
+    return df[cat.stat].astype(float)
 
 
 def value_players(
@@ -71,19 +78,19 @@ def value_players(
     h2h: bool = True,
 ) -> ValuationResult:
     """Score players (per-game columns FGM, FGA, FTM, FTA, FG3M, PTS, REB, AST, STL, BLK, TOV)."""
-    punts = tuple(p for p in punts if p in CATEGORY_NAMES)
+    punts = tuple(p for p in punts if p in cat_names())
     evidence = players["GP_TOT"] if "GP_TOT" in players else players["GP"]
     df = players[evidence >= min_games].copy().reset_index(drop=True)
     if df.empty:
-        return ValuationResult(df, pd.Series(0.0, index=CATEGORY_NAMES), 0, punts)
+        return ValuationResult(df, pd.Series(0.0, index=cat_names()), 0, punts)
     pool_size = min(n_teams * roster_size, len(df))
-    active = [f"z_{c}" for c in CATEGORY_NAMES if c not in punts]
+    active = [f"z_{c}" for c in cat_names() if c not in punts]
 
     # Seed the pool with minutes played: a stable, category-neutral first guess.
     pool_mask = df["MIN"].rank(ascending=False, method="first") <= pool_size
     def weights(mask) -> pd.Series:
         if not h2h:
-            return pd.Series(1.0, index=Z_COLS)
+            return pd.Series(1.0, index=z_cols())
         f = h2h_factors(df.assign(in_pool=mask.values))
         return pd.Series(f.values, index=[f"z_{c}" for c in f.index])
 
@@ -100,7 +107,7 @@ def value_players(
     w = weights(pool_mask)
     df = pd.concat([df, z], axis=1)
     df["value"] = (df[active] * w[active]).sum(axis=1)
-    df["value_all9"] = (df[Z_COLS] * w).sum(axis=1)
+    df["value_all9"] = (df[z_cols()] * w).sum(axis=1)
     # Availability: a player who plays 55 of 82 games delivers ~2/3 of his per-game value
     # over a season. Show both; per-game value drives weekly decisions, adjusted drives drafts.
     if "availability" not in df:
@@ -114,16 +121,16 @@ def value_players(
     band = df.iloc[pool_size: pool_size + max(5, pool_size // 10)]
     if band.empty:
         band = df.tail(max(5, pool_size // 10))
-    replacement = band[Z_COLS].mean()
-    replacement.index = CATEGORY_NAMES
+    replacement = band[z_cols()].mean()
+    replacement.index = cat_names()
     return ValuationResult(df, replacement, pool_size, punts)
 
 
 def category_profile(values: pd.DataFrame, player_ids: list) -> pd.Series:
     """Sum of per-category z for a set of players (a roster, or one side of a trade)."""
     sub = values[values["PLAYER_ID"].isin(player_ids)]
-    s = sub[Z_COLS].sum()
-    s.index = CATEGORY_NAMES
+    s = sub[z_cols()].sum()
+    s.index = cat_names()
     return s
 
 
@@ -143,13 +150,20 @@ def h2h_factors(table: pd.DataFrame) -> pd.Series:
     """
     pool = table[table["in_pool"]] if "in_pool" in table and table["in_pool"].any() else table
     out = {}
-    for c in CATEGORIES:
+    for c in cats():
         if c.kind == "pct":
             a = pool[c.attempts]
             p = (pool[c.makes] / a.where(a > 0)).fillna(0)
             pbar = pool[c.makes].sum() / max(a.sum(), 1e-9)
             between = float(((p - pbar) * a).std())
-            within = float(np.sqrt((a * p * (1 - p)).mean() / H2H_GAMES))
+            if c.is_shooting:   # binomial makes
+                within = float(np.sqrt((a * p * (1 - p)).mean() / H2H_GAMES))
+            else:               # A/T-style ratio of two counts: impact = num - pbar*den, both Poisson
+                within = float(np.sqrt((pool[c.makes] + pbar ** 2 * a).mean() / H2H_GAMES))
+        elif c.kind == "points":
+            # Weekly noise of a weighted sum of Poisson stats: sum of w^2 x mean.
+            between = float(_stat_series(pool, c).std())
+            within = float(np.sqrt(max(sum(w * w * pool[col].mean() for col, w in c.weights), 0) / H2H_GAMES))
         else:
             between = float(pool[c.stat].std())
             within = float(np.sqrt(max(pool[c.stat].mean(), 0) / H2H_GAMES))
@@ -175,11 +189,14 @@ def trade_market(table: pd.DataFrame) -> pd.Series:
         return pd.Series(dtype=float)
     t = table.drop_duplicates("PLAYER_ID")
     f = h2h_factors(t)
-    gz = pd.DataFrame({c: t[f"z_{c}"] * f[c] for c in CATEGORY_NAMES}, index=t.index)
+    gz = pd.DataFrame({c: t[f"z_{c}"] * f[c] for c in cat_names()}, index=t.index)
     total = gz.sum(axis=1)
-    punt_best = pd.concat([(total - gz[c]) * len(CATEGORY_NAMES) / (len(CATEGORY_NAMES) - 1)
-                           for c in CATEGORY_NAMES], axis=1).max(axis=1)
-    base = pd.concat([total, BUILD_HAIRCUT * punt_best], axis=1).max(axis=1)
+    n = len(cat_names())
+    if n >= 5:
+        punt_best = pd.concat([(total - gz[c]) * n / (n - 1) for c in cat_names()], axis=1).max(axis=1)
+        base = pd.concat([total, BUILD_HAIRCUT * punt_best], axis=1).max(axis=1)
+    else:   # points leagues and tiny category sets: nothing sensible to punt
+        base = total
     n_pool = int(t["in_pool"].sum()) if "in_pool" in t else len(t)
     ordered = base.sort_values(ascending=False)
     repl = float(ordered.iloc[min(n_pool, len(ordered) - 1)])
@@ -189,10 +206,13 @@ def trade_market(table: pd.DataFrame) -> pd.Series:
 
 # ============================================================ fantasy points
 # Yahoo's default points-league scoring (help.yahoo.com/kb/SLN6919). Shown as an
-# alternate sort; this league is scored on the nine categories, not points.
-YAHOO_POINTS = {"PTS": 1.0, "REB": 1.2, "AST": 1.5, "STL": 3.0, "BLK": 3.0, "TOV": -1.0}
+# alternate sort in category leagues. Points leagues use their own modifiers.
+YAHOO_POINTS = dict(YAHOO_DEFAULT_POINTS.weights)
 
 
-def fantasy_points(df: pd.DataFrame) -> pd.Series:
-    """Fantasy points per game under Yahoo's default points scoring."""
-    return sum(df[col].astype(float) * w for col, w in YAHOO_POINTS.items())
+def fantasy_points(df: pd.DataFrame, weights: dict | None = None) -> pd.Series:
+    """Fantasy points per game: the active points league's scoring, else Yahoo's default."""
+    if weights is None:
+        pts = [c for c in cats() if c.kind == "points"]
+        weights = dict(pts[0].weights) if pts else YAHOO_POINTS
+    return sum(df[col].astype(float) * w for col, w in weights.items())

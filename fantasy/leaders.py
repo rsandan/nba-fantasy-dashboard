@@ -10,43 +10,40 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .categories import BY_NAME, CATEGORIES, CATEGORY_NAMES, category_value
+from .categories import by_name, cats, cat_names, category_value, per_week_value
 
 ADDITIVE = ["FGM", "FGA", "FTM", "FTA", "FG3M", "FG3A", "PTS", "REB", "AST", "STL", "BLK", "TOV"]
 
 
 def _values(rows: pd.DataFrame) -> pd.DataFrame:
     """One row per team -> team x category values."""
-    out = {c.name: [category_value(r, c) for _, r in rows.iterrows()] for c in CATEGORIES}
+    out = {c.name: [category_value(r, c) for _, r in rows.iterrows()] for c in cats()}
     return pd.DataFrame(out, index=rows["team_key"].values)
 
 
 def week_table(tw: pd.DataFrame, week: int) -> pd.DataFrame:
     rows = tw[(tw["week"] == week) & (tw["status"] != "preevent")]
-    return _values(rows) if not rows.empty else pd.DataFrame(columns=CATEGORY_NAMES)
+    return _values(rows) if not rows.empty else pd.DataFrame(columns=cat_names())
 
 
 def season_table(tw: pd.DataFrame) -> pd.DataFrame:
     """Per-week averages over completed weeks; percentages from season makes/attempts."""
     done = tw[tw["status"] == "postevent"]
     if done.empty:
-        return pd.DataFrame(columns=CATEGORY_NAMES)
+        return pd.DataFrame(columns=cat_names())
     g = done.groupby("team_key")
-    tot = g[ADDITIVE].sum()
+    tot = g[[c for c in ADDITIVE if c in done]].sum()
     weeks = g["week"].nunique()
     out = pd.DataFrame(index=tot.index)
-    for c in CATEGORIES:
-        if c.kind == "pct":
-            out[c.name] = tot[c.makes] / tot[c.attempts].where(tot[c.attempts] > 0)
-        else:
-            out[c.name] = tot[c.stat] / weeks
+    for c in cats():
+        out[c.name] = per_week_value(tot, c, weeks)
     return out
 
 
 def ranks(values: pd.DataFrame) -> pd.DataFrame:
     """1 = best. Turnovers: fewest is best. Missing values rank last."""
     out = pd.DataFrame(index=values.index)
-    for c in CATEGORIES:
+    for c in cats():
         if c.name not in values:
             continue
         out[c.name] = values[c.name].rank(ascending=not c.higher_is_better, method="min", na_option="bottom")
@@ -63,7 +60,7 @@ def trend(tw: pd.DataFrame, cat: str, include_live: bool = False) -> pd.DataFram
     because a half-finished week's counting stats would read as a slump."""
     keep = {"postevent", "midevent"} if include_live else {"postevent"}
     rows = tw[tw["status"].isin(keep)]
-    c = BY_NAME[cat]
+    c = by_name()[cat]
     vals = [category_value(r, c) for _, r in rows.iterrows()]
     return pd.DataFrame({"week": rows["week"].values, "team_key": rows["team_key"].values, "value": vals})
 
@@ -75,7 +72,7 @@ def league_average(values: pd.DataFrame) -> pd.Series:
 def bar_share(values: pd.Series, cat: str) -> pd.Series:
     """0-1 bar length relative to the best team (inverted for turnovers)."""
     v = values.astype(float)
-    if BY_NAME[cat].higher_is_better:
+    if by_name()[cat].higher_is_better:
         top = v.max()
         return (v / top).clip(0, 1) if top and top == top else v * 0
     low = v.min()
@@ -85,8 +82,8 @@ def bar_share(values: pd.Series, cat: str) -> pd.Series:
 def vs_average(value: float, avg: float, cat: str) -> str:
     if value != value or avg != avg or avg == 0:
         return "", None
-    c = BY_NAME[cat]
-    if c.kind == "pct":
+    c = by_name()[cat]
+    if c.is_shooting:
         d = (value - avg) * 1000
         better = None if abs(d) < 0.5 else d > 0
         txt = f"{'+' if d >= 0 else '−'}{abs(d):.0f} pts vs avg"

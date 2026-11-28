@@ -26,11 +26,10 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
-from .categories import CATEGORY_NAMES
+from .categories import cat_names, z_cols
 from .trade import DEPTH, context_weights, is_unavailable
 from .valuation import h2h_factors, trade_market
 
-Z = [f"z_{c}" for c in CATEGORY_NAMES]
 ACTIVE_EXCLUDE = {"BN", "IL", "IL+", "NA"}
 FLEX = {"Util": None, "G": {"PG", "SG"}, "F": {"SF", "PF"}}
 STATUS_TEXT = {"O": "out", "OUT": "out", "INJ": "injured", "IL": "on the injured list", "IL+": "on the injured list",
@@ -51,13 +50,13 @@ class TeamProfile:
 def roster_z(rosters: pd.DataFrame, values: pd.DataFrame) -> pd.DataFrame:
     """Team x category sum of per-game z over healthy rostered players."""
     if rosters is None or rosters.empty or values is None or values.empty:
-        return pd.DataFrame(columns=CATEGORY_NAMES)
+        return pd.DataFrame(columns=cat_names())
     r = rosters.dropna(subset=["PLAYER_ID"])
     if "status" in r:
         r = r[~r["status"].map(is_unavailable)]
-    m = r[["team_key", "PLAYER_ID"]].merge(values[["PLAYER_ID", *Z]], on="PLAYER_ID")
-    out = m.groupby("team_key")[Z].sum()
-    out.columns = CATEGORY_NAMES
+    m = r[["team_key", "PLAYER_ID"]].merge(values[["PLAYER_ID", *z_cols()]], on="PLAYER_ID")
+    out = m.groupby("team_key")[z_cols()].sum()
+    out.columns = cat_names()
     return out
 
 
@@ -68,7 +67,7 @@ def team_profile(team: str, cat_rates: pd.DataFrame, rz: pd.DataFrame) -> TeamPr
     res_rank = cat_rates.rank(ascending=False, method="min") if not cat_rates.empty else pd.DataFrame()
     ros_rank = rz.rank(ascending=False, method="min") if not rz.empty else pd.DataFrame()
     rows = []
-    for c in CATEGORY_NAMES:
+    for c in cat_names():
         rr = int(res_rank.at[team, c]) if team in res_rank.index else None
         ro = int(ros_rank.at[team, c]) if team in ros_rank.index else None
         ranks = [x for x in (rr, ro) if x is not None]
@@ -123,11 +122,11 @@ def _profile_vec(team, cat_rates, rz) -> pd.Series:
     """Blend of results and roster strength, centered: + is a surplus, - a need."""
     parts = []
     if team in cat_rates.index:
-        parts.append(cat_rates.loc[team].reindex(CATEGORY_NAMES).rank(pct=True))
+        parts.append(cat_rates.loc[team].reindex(cat_names()).rank(pct=True))
     if team in rz.index:
-        parts.append(rz.loc[team].reindex(CATEGORY_NAMES).rank(pct=True))
+        parts.append(rz.loc[team].reindex(cat_names()).rank(pct=True))
     if not parts:
-        return pd.Series(0.0, index=CATEGORY_NAMES)
+        return pd.Series(0.0, index=cat_names())
     return sum(parts) / len(parts) - 0.5
 
 
@@ -140,8 +139,8 @@ def trade_partners(me: str, teams: list, cat_rates: pd.DataFrame, rz: pd.DataFra
         th = _profile_vec(t, cat_rates, rz)
         corr = float(np.corrcoef(mine.values, th.values)[0, 1]) if mine.std() > 0 and th.std() > 0 else 0.0
         fit = round((1 - corr) / 2 * 100)
-        they_need = [c for c in CATEGORY_NAMES if mine[c] > 0.1 and th[c] < -0.1]
-        they_have = [c for c in CATEGORY_NAMES if th[c] > 0.1 and mine[c] < -0.1]
+        they_need = [c for c in cat_names() if mine[c] > 0.1 and th[c] < -0.1]
+        they_have = [c for c in cat_names() if th[c] > 0.1 and mine[c] < -0.1]
         they_need.sort(key=lambda c: th[c])
         they_have.sort(key=lambda c: mine[c])
         out.append(Partner(t, fit, they_need, they_have))
@@ -200,20 +199,20 @@ def suggest_trades(me: str, rosters: pd.DataFrame, values: pd.DataFrame, replace
     if "status" in r:
         r = r[~r["status"].map(is_unavailable)]
     r = r[r["PLAYER_ID"].isin(v.index)]
-    repl = replacement.reindex(CATEGORY_NAMES).fillna(0).values
+    repl = replacement.reindex(cat_names()).fillna(0).values
     market = trade_market(values)
-    hf = h2h_factors(values).reindex(CATEGORY_NAMES).fillna(1.0).values
+    hf = h2h_factors(values).reindex(cat_names()).fillna(1.0).values
 
     def side(team):
         ids = r[r["team_key"] == team]["PLAYER_ID"].tolist()
         ids = sorted(ids, key=lambda i: -float(market.get(i, 0.0)))[:per_side]
-        z = v.loc[ids, Z].values if ids else np.zeros((0, len(Z)))
+        z = v.loc[ids, z_cols()].values if ids else np.zeros((0, len(z_cols())))
         mv = np.array([float(market.get(i, 0.0)) for i in ids])
         return ids, z, mv
 
     def weights(team):
         rates = cat_rates.loc[team] if team in cat_rates.index else None
-        return context_weights(rates, floor=NEED_FLOOR).reindex(CATEGORY_NAMES).values * hf
+        return context_weights(rates, floor=NEED_FLOOR).reindex(cat_names()).values * hf
 
     def pkg(xs):
         xs = sorted(xs, reverse=True)

@@ -24,7 +24,7 @@ from typing import Any, Iterable
 
 import pandas as pd
 
-from .categories import YAHOO_NAME_TO_COL, YAHOO_STAT_IDS
+from .categories import DEFAULT, SPLIT_STATS, STAT_TO_COL, YAHOO_STAT_IDS, Scoring, scoring_from_settings
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ TEAM_WEEK_COLUMNS = [
     "is_playoffs", "is_consolation", "week_start", "week_end",
     "games", "live_games", "remaining_games",
     "FGM", "FGA", "FTM", "FTA", "FG3M", "FG3A", "PTS", "REB", "AST", "STL", "BLK", "TOV",
-    "FG%", "FT%", "3PT%",
+    "FG%", "FT%", "3PT%", "team_points",
 ]
 
 
@@ -193,17 +193,16 @@ def _parse_team_block(team: list) -> dict:
                 sid = str(stat["stat"]["stat_id"])
                 label = YAHOO_STAT_IDS.get(sid)
                 value = stat["stat"].get("value")
-                if label == "FGM/A":
-                    row["FGM"], row["FGA"] = _split_made_attempted(value)
-                elif label == "FTM/A":
-                    row["FTM"], row["FTA"] = _split_made_attempted(value)
-                elif label == "3PTM/A":
-                    row["FG3M"], row["FG3A"] = _split_made_attempted(value)
-                elif label in ("FG%", "FT%", "3PT%"):
+                if label in SPLIT_STATS:
+                    m, a = SPLIT_STATS[label]
+                    row[m], row[a] = _split_made_attempted(value)
+                elif label in ("FG%", "FT%", "3PT%", "A/T"):
                     row[label] = _to_float(value)
-                elif label in YAHOO_NAME_TO_COL:
+                elif label in STAT_TO_COL:
                     v = _to_float(value)
-                    row[YAHOO_NAME_TO_COL[label]] = 0.0 if v != v else v
+                    row.setdefault(STAT_TO_COL[label], 0.0 if v != v else v)
+        if "team_points" in fragment:
+            row["team_points"] = _to_float(fragment["team_points"].get("total"))
         if "team_remaining_games" in fragment:
             total = fragment["team_remaining_games"].get("total", {})
             row["remaining_games"] = _to_float(total.get("remaining_games"))
@@ -302,6 +301,56 @@ def parse_transactions(raw: list[dict], tz: str = "America/New_York") -> pd.Data
     return df.sort_values("timestamp").reset_index(drop=True)
 
 
+def scoring_from_raw_settings(raw: dict, scoring_type: str | None = None) -> Scoring:
+    """``league/{key}/settings`` JSON -> Scoring."""
+    league = raw["fantasy_content"]["league"]
+    settings = dict(league[1]["settings"][0])
+    fields = league[0] if isinstance(league[0], dict) else {}
+    settings.setdefault("scoring_type", scoring_type or fields.get("scoring_type", "head"))
+    return scoring_from_settings(settings)
+
+
+def parse_user_leagues(raw: dict) -> list[dict]:
+    """``users;use_login=1/games;game_codes=nba/leagues`` -> the user's NBA leagues.
+
+    Yahoo nests leagues as ``{"league": [{...fields...}]}`` inside numbered dicts; we
+    walk the document instead of hard-coding the path, which Yahoo has changed before.
+    """
+    found: dict[str, dict] = {}
+
+    def walk(node):
+        if isinstance(node, dict):
+            if "league_key" in node and "name" in node:
+                key = str(node["league_key"])
+                found.setdefault(key, {
+                    "league_key": key, "name": node.get("name"), "season": str(node.get("season", "")),
+                    "num_teams": int(node.get("num_teams") or 0), "scoring_type": node.get("scoring_type"),
+                    "logo_url": node.get("logo_url") or None, "url": node.get("url"),
+                    "is_finished": str(node.get("is_finished", "0")) == "1",
+                })
+            for v in node.values():
+                walk(v)
+        elif isinstance(node, list):
+            for v in node:
+                walk(v)
+
+    walk(raw)
+    return sorted(found.values(), key=lambda d: (d["is_finished"], -int(d["league_key"].split(".")[0]),
+                                                 d["name"] or ""))
+
+
+def user_leagues(sc) -> list[dict]:
+    """Every NBA league the signed-in user is in (current season first)."""
+    import yahoo_fantasy_api as yfa
+    gm = yfa.Game(sc, "nba")
+    return parse_user_leagues(gm.yhandler.get("users;use_login=1/games;game_codes=nba/leagues"))
+
+
+def open_league(sc, league_key: str):
+    import yahoo_fantasy_api as yfa
+    return yfa.Game(sc, "nba").to_league(league_key)
+
+
 # ------------------------------------------------------------------ league facade
 @dataclass
 class LeagueMeta:
@@ -316,6 +365,8 @@ class LeagueMeta:
     playoff_start_week: int
     num_playoff_teams: int
     roster_size: int
+    scoring: Scoring = DEFAULT
+    logo_url: str | None = None
 
 
 class YahooLeague:
@@ -334,6 +385,7 @@ class YahooLeague:
         except Exception:  # positions endpoint is occasionally flaky; 13 is Yahoo's default
             roster_size = 13
         end_week = int(s.get("end_week", self.lg.end_week()))
+        scoring = self.scoring(s.get("scoring_type", "head"))
         return LeagueMeta(
             league_key=s.get("league_key", self.lg.league_id),
             name=s.get("name", "Fantasy League"),
@@ -346,7 +398,18 @@ class YahooLeague:
             playoff_start_week=int(s.get("playoff_start_week", end_week + 1) or end_week + 1),
             num_playoff_teams=int(s.get("num_playoff_teams", 6) or 6),
             roster_size=roster_size or 13,
+            scoring=scoring,
+            logo_url=s.get("logo_url") or None,
         )
+
+    def scoring(self, scoring_type: str = "head") -> Scoring:
+        """The league's categories (or points modifiers), from the raw settings document."""
+        try:
+            raw = self.lg.yhandler.get_settings_raw(self.lg.league_id)
+            return scoring_from_raw_settings(raw, scoring_type)
+        except Exception as exc:  # never take the page down over settings; flag it instead
+            log.warning("Couldn't read league scoring settings (%s); assuming 9-cat.", exc)
+            return Scoring(DEFAULT.categories, scoring_type, ("settings unavailable",))
 
     def teams(self) -> pd.DataFrame:
         rows = []
@@ -367,7 +430,8 @@ class YahooLeague:
             rows.append({"team_key": t.get("team_key"), "team_name": t.get("name"),
                          "rank": int(t.get("rank") or 0),
                          "wins": int(ot.get("wins", 0)), "losses": int(ot.get("losses", 0)),
-                         "ties": int(ot.get("ties", 0))})
+                         "ties": int(ot.get("ties", 0)),
+                         "points": _to_float(t.get("points_for"))})
         return pd.DataFrame(rows)
 
     def scoreboard(self, week: int) -> pd.DataFrame:
@@ -377,18 +441,28 @@ class YahooLeague:
         return parse_transactions(self.lg.transactions("add,drop,trade", ""))
 
     def rosters(self, team_keys: Iterable[str]) -> pd.DataFrame:
-        frames = []
-        for key in team_keys:
+        """One Yahoo call per team, made in parallel: a 12-team league's rosters take one
+        round trip instead of twelve."""
+        from concurrent.futures import ThreadPoolExecutor
+        keys = list(team_keys)
+
+        def one(key):
             roster = pd.DataFrame(self.lg.to_team(key).roster())
             if not roster.empty:
                 roster["team_key"] = key
-                frames.append(roster)
+            return roster
+
+        with ThreadPoolExecutor(max_workers=max(1, min(6, len(keys)))) as pool:
+            frames = [f for f in pool.map(one, keys) if not f.empty]
         return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
     def free_agents(self, positions: tuple[str, ...] = ("G", "F", "C")) -> pd.DataFrame:
+        from concurrent.futures import ThreadPoolExecutor
         seen: dict[int, dict] = {}
-        for pos in positions:
-            for p in self.lg.free_agents(pos):
+        with ThreadPoolExecutor(max_workers=len(positions)) as pool:
+            batches = list(pool.map(self.lg.free_agents, positions))
+        for batch in batches:
+            for p in batch:
                 seen.setdefault(p["player_id"], p)
         df = pd.DataFrame(list(seen.values()))
         if not df.empty:

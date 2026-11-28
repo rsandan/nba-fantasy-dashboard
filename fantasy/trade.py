@@ -22,9 +22,9 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
-from .categories import CATEGORY_NAMES
+from .categories import cat_names, z_cols
 from .nba_data import YAHOO_TO_NBA_TEAM, normalize_name
-from .valuation import Z_COLS, category_profile
+from .valuation import category_profile
 
 # Yahoo player status codes that mean "won't play": out, injured, on IL, suspended, not active.
 UNAVAILABLE = {"O", "OUT", "INJ", "IL", "IL+", "SUSP", "NA", "NR"}
@@ -37,9 +37,9 @@ def is_unavailable(status) -> bool:
 
 def context_weights(cat_rates: pd.Series | None, punts=(), floor: float = 0.25) -> pd.Series:
     if cat_rates is None or cat_rates.empty:
-        w = pd.Series(1.0, index=CATEGORY_NAMES)
+        w = pd.Series(1.0, index=cat_names())
     else:
-        p = cat_rates.reindex(CATEGORY_NAMES).fillna(0.5).clip(0, 1)
+        p = cat_rates.reindex(cat_names()).fillna(0.5).clip(0, 1)
         w = floor + (1 - floor) * 4 * p * (1 - p)
     for c in punts:
         if c in w.index:
@@ -61,9 +61,9 @@ def package_value(values: pd.DataFrame, ids: list, replacement: pd.Series, weigh
     if sub.empty:
         return 0.0
     from .valuation import h2h_factors
-    repl = replacement.reindex(CATEGORY_NAMES).fillna(0)
-    w = weights.reindex(CATEGORY_NAMES).fillna(1.0) * h2h_factors(values).reindex(CATEGORY_NAMES).fillna(1.0)
-    per = sum((sub[f"z_{c}"] - repl[c]) * w[c] for c in CATEGORY_NAMES)
+    repl = replacement.reindex(cat_names()).fillna(0)
+    w = weights.reindex(cat_names()).fillna(1.0) * h2h_factors(values).reindex(cat_names()).fillna(1.0)
+    per = sum((sub[f"z_{c}"] - repl[c]) * w[c] for c in cat_names())
     vals = sorted(per.tolist(), reverse=True)
     return float(sum(v * (DEPTH ** i) for i, v in enumerate(vals)))
 
@@ -80,9 +80,9 @@ def evaluate_trade(values: pd.DataFrame, give_ids: list, get_ids: list,
                    replacement: pd.Series, weights: pd.Series | None = None) -> TradeEval:
     give = category_profile(values, give_ids)
     get = category_profile(values, get_ids)
-    spot_adj = (len(give_ids) - len(get_ids)) * replacement.reindex(CATEGORY_NAMES).fillna(0)
+    spot_adj = (len(give_ids) - len(get_ids)) * replacement.reindex(cat_names()).fillna(0)
     delta = get - give + spot_adj
-    w = weights if weights is not None else pd.Series(1.0, index=CATEGORY_NAMES)
+    w = weights if weights is not None else pd.Series(1.0, index=cat_names())
     table = pd.DataFrame({"give_z": give, "get_z": get, "roster_spot_adj": spot_adj,
                           "delta": delta, "weight": w, "weighted_delta": delta * w})
     active = w > 0
@@ -131,20 +131,20 @@ def streaming_board(free_agents: pd.DataFrame, values: pd.DataFrame, games_left:
     player with 4 games often beats a better one with 2; this puts that on one scale.
     """
     fa = match_players(free_agents, values)
-    fa = fa.merge(values[["PLAYER_ID", "GP", "MIN", *Z_COLS, "value"]], on="PLAYER_ID", how="inner")
+    fa = fa.merge(values[["PLAYER_ID", "GP", "MIN", *z_cols(), "value"]], on="PLAYER_ID", how="inner")
     if "status" in fa:
         # A player Yahoo lists as out or injured has no games to give this week, however
         # good his per-game line is. Game-time decisions stay, flagged in the UI.
         fa = fa[~fa["status"].map(is_unavailable)]
     team = fa["TEAM"].fillna(fa["nba_team"])
     fa["games_left"] = team.map(games_left).fillna(0).astype(int)
-    repl = replacement if replacement is not None else pd.Series(0.0, index=CATEGORY_NAMES)
+    repl = replacement if replacement is not None else pd.Series(0.0, index=cat_names())
     from .valuation import h2h_factors
     hf = h2h_factors(values)                    # same H2H weighting as the rankings
-    wz = sum((fa[f"z_{c}"] - repl.get(c, 0.0)) * weights.get(c, 1.0) * hf.get(c, 1.0) for c in CATEGORY_NAMES)
+    wz = sum((fa[f"z_{c}"] - repl.get(c, 0.0)) * weights.get(c, 1.0) * hf.get(c, 1.0) for c in cat_names())
     fa["weighted_per_game"] = wz
     fa["stream_score"] = wz * fa["games_left"]
     cols = ["PLAYER_ID", "name", "TEAM", "eligible_positions", "percent_owned", "status", "games_left",
-            "GP", "MIN", "value", "weighted_per_game", "stream_score", *Z_COLS]
+            "GP", "MIN", "value", "weighted_per_game", "stream_score", *z_cols()]
     cols = [c for c in cols if c in fa.columns]
     return fa[cols].sort_values("stream_score", ascending=False).reset_index(drop=True)

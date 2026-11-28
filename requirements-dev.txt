@@ -1,2 +1,4 @@
 -r requirements.txt
 pytest>=8
+psutil>=5.9        # scripts/load_test.py
+playwright>=1.40   # scripts/load_test.py (then: playwright install chromium)

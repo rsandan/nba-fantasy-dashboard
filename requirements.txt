@@ -4,6 +4,8 @@ yahoo_fantasy_api>=2.12
 nba_api>=1.10
 lxml>=5.0          # Basketball-Reference tables in scripts/refresh_data.py
 # App + analytics
+cryptography>=42   # encrypts the "stay signed in" cookie
+requests>=2.31
 streamlit>=1.60
 pandas>=2.2
 numpy>=1.26

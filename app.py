@@ -1,12 +1,16 @@
-"""Love Island (NBA) fantasy dashboard. Built for iPhone first.
+"""Fantasy Hoops: a dashboard for any Yahoo fantasy basketball league. iPhone first.
+
+Started as the Love Island (NBA) league's dashboard; that league is still "featured"
+(opens without sign-in). Anyone else signs in with Yahoo and picks one of their leagues.
 
 Run:  streamlit run app.py                  (live, needs Yahoo OAuth secrets)
       FANTASY_DEMO=1 streamlit run app.py   (synthetic league, no credentials)
 
-Four tabs, one job each:
+Tabs, one job each:
+  Home        your game plan and the league's storylines
   This Week   how is my matchup going, category by category
   Standings   record, schedule-neutral power, playoff odds
-  Players     who to pick up today, and a searchable 9-cat ranking
+  Players     who to pick up today, and a searchable ranking in your league's scoring
   Trade       should I take this deal
 """
 from __future__ import annotations
@@ -21,12 +25,14 @@ import altair as alt
 
 from fantasy import hub, insights, leaders, nba_data, power, splash, trade
 from fantasy import ui
-from fantasy.categories import BY_NAME, CATEGORIES, CATEGORY_NAMES, category_value, compare
-from fantasy.data_source import connect
+from fantasy import accounts
+from fantasy.categories import by_name, cats, cat_names, category_value, compare, fmt_value
+from fantasy.categories import use as use_scoring
 from fantasy.ui import e, pct, signed
-from fantasy.valuation import Z_COLS, fantasy_points, value_players
+from fantasy.yahoo_client import TEAM_WEEK_COLUMNS
+from fantasy.valuation import fantasy_points, value_players
 
-st.set_page_config(page_title="Love Island", page_icon="🏀", layout="centered",
+st.set_page_config(page_title="Fantasy Hoops", page_icon="🏀", layout="centered",
                    initial_sidebar_state="collapsed")
 ET = "America/New_York"
 
@@ -43,26 +49,104 @@ _SPLASH = None
 if not st.session_state.get("_splashed"):
     st.session_state["_splashed"] = True
     _SPLASH = st.empty()
-    _SPLASH.html(splash.render(_splash_title()["title"]))
+    _other = "league" in st.query_params or bool(st.context.cookies.get("fx_session"))
+    _SPLASH.html(splash.render("Fantasy Hoops" if _other else _splash_title()["title"]))
+
+
+# ======================================================================= sign in & leagues
+def _auth_message():
+    msg = st.session_state.pop("auth_msg", None)
+    if msg:
+        st.html(ui.note(msg, error=True))
+
+
+def _pick_league(widget_key: str):
+    accounts.choose_league(st.session_state[widget_key])
+
+
+def league_panel(current_key: str | None = None, widget_key: str = "league_pick"):
+    """League switcher + sign in / sign out. Lives in the profile menu and the landing page."""
+    cfg = accounts.oauth_config()
+    user = st.session_state.get("user")
+    opts = accounts.league_options(user)
+    keys = [k for k, _ in opts]
+    if len(opts) > 1 or current_key not in keys:
+        labels = dict(opts)
+        st.radio("League", keys, index=keys.index(current_key) if current_key in keys else None,
+                 format_func=lambda k: labels.get(k, k), key=widget_key,
+                 on_change=_pick_league, args=(widget_key,))
+    if user is not None:
+        if st.button("Sign out of Yahoo", key=f"{widget_key}_out", type="tertiary"):
+            accounts.sign_out()
+            st.rerun()
+    elif cfg is not None:
+        st.html(ui.yahoo_button(accounts.sign_in_url(cfg), "Use your league: sign in with Yahoo"))
+        st.caption("Read-only access to your Yahoo fantasy leagues. Nothing is posted, and you can "
+                   "revoke it anytime in your Yahoo account settings.")
+
+
+def landing_page():
+    """First screen when there's no league to show yet."""
+    st.html(ui.large_title("Fantasy Hoops", "For Yahoo fantasy basketball"))
+    _auth_message()
+    st.html('<div class="landing"><div class="k">Your league, decoded</div>'
+            '<div class="t">Win odds, game plans and fair trades for your Yahoo league</div>'
+            "<p>Works with head-to-head categories (any mix), one-win weeks and points leagues.</p>"
+            "<ul><li>Chance to win this week, category by category</li>"
+            "<li>Who to add tonight, and who to drop</li>"
+            "<li>Trade ideas that are fair to both sides</li></ul></div>")
+    cfg = accounts.oauth_config()
+    if cfg is not None and st.session_state.get("user") is None:
+        st.html(ui.yahoo_button(accounts.sign_in_url(cfg)))
+        st.caption("Read-only. We never see your Yahoo password, and nothing is posted to your league.")
+    elif cfg is None:
+        st.html(ui.note("Yahoo sign-in isn't set up on this server yet."))
+    if st.button("Look around the demo league first", key="landing_demo", type="tertiary"):
+        accounts.choose_league(accounts.DEMO_KEY)
+        st.rerun()
+    user = st.session_state.get("user")
+    if user is not None and user.leagues:
+        league_panel(None, "landing_pick")
+
+
+# ======================================================================= who & which league
+# Each browser session resolves its own league: the featured league (server token, no
+# sign-in), one of the signed-in user's Yahoo leagues, or the demo. See fantasy/accounts.py.
+CTX = accounts.resolve()
+if CTX is None:
+    ui.inject()
+    accounts.flush_cookie()
+    if _SPLASH is not None:
+        _SPLASH.empty()
+    landing_page()
+    st.stop()
+
+SOURCE, FALLBACK_REASON = CTX.source, CTX.fallback_reason
 
 
 # ============================================================================ data
-@st.cache_resource(show_spinner=False)          # the loading screen covers this
-def get_source():
-    return connect()
-
-
-SOURCE, FALLBACK_REASON = get_source()
-
-
 @st.cache_data(ttl=600, show_spinner=False)
-def load_meta(_tag: str):
+def load_meta(key: str):
     return SOURCE.meta()
 
 
-META = load_meta("demo" if SOURCE.is_demo else "live")
-_splash_title()["title"] = META.name
-KEY = META.league_key
+try:
+    META = load_meta(CTX.league_key)
+except Exception as _exc:                    # a league Yahoo won't serve: back to the picker
+    st.session_state["auth_msg"] = "Yahoo wouldn't open that league right now. Pick another or try again."
+    st.session_state.pop("league", None)
+    if "league" in st.query_params:
+        del st.query_params["league"]
+    ui.inject()
+    if _SPLASH is not None:
+        _SPLASH.empty()
+    landing_page()
+    st.stop()
+use_scoring(META.scoring)                   # this session's categories, for every model below
+SCORING = META.scoring
+if CTX.kind == "featured":
+    _splash_title()["title"] = META.name
+KEY = CTX.league_key
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -92,10 +176,27 @@ def load_future_weeks(key: str, first: int, last: int) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
+@st.cache_data(ttl=None, max_entries=500, show_spinner=False)
+def load_final_weeks(key: str, first: int, last: int) -> pd.DataFrame:
+    """Every completed week, fetched in parallel (a new league's first load makes ~20
+    scoreboard calls; one at a time that's the slowest part of the page)."""
+    from concurrent.futures import ThreadPoolExecutor
+    weeks = list(range(first, last + 1))
+    if not weeks:
+        return pd.DataFrame(columns=TEAM_WEEK_COLUMNS)
+    with ThreadPoolExecutor(max_workers=min(6, len(weeks))) as pool:
+        frames = list(pool.map(SOURCE.week, weeks))
+    frames = [f for f in frames if f is not None and not f.empty]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=TEAM_WEEK_COLUMNS)
+
+
 def team_weeks() -> pd.DataFrame:
-    frames = [load_final_week(KEY, w) for w in range(META.start_week, META.current_week)]
-    frames.append(load_live_week(KEY, META.current_week))
-    return pd.concat([f for f in frames if not f.empty], ignore_index=True)
+    if not SCORING.weekly:          # roto / season points: no weekly matchups to read
+        return pd.DataFrame(columns=TEAM_WEEK_COLUMNS)
+    frames = [load_final_weeks(KEY, META.start_week, META.current_week - 1),
+              load_live_week(KEY, META.current_week)]
+    frames = [f for f in frames if not f.empty]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=TEAM_WEEK_COLUMNS)
 
 
 @st.cache_data(ttl=600, show_spinner=False)          # lineups change daily: keep this fresh
@@ -141,8 +242,14 @@ def blended_players(season: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=1800, show_spinner=False)
-def valuation(players: pd.DataFrame, punts: tuple, n_teams: int, roster_size: int):
+def _valuation(players: pd.DataFrame, punts: tuple, n_teams: int, roster_size: int, scoring_sig: str):
     return value_players(players, n_teams=n_teams, roster_size=roster_size, punts=punts)
+
+
+def valuation(players: pd.DataFrame, punts: tuple, n_teams: int, roster_size: int):
+    """Player values in *this* league's scoring. The players table is shared by every
+    league, so the scoring fingerprint is part of the cache key."""
+    return _valuation(players, punts, n_teams, roster_size, SCORING.sig)
 
 
 @st.cache_data(ttl=600, show_spinner=False)
@@ -153,7 +260,8 @@ def matched_rosters(key: str, values: pd.DataFrame) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300, show_spinner="Crunching the numbers…")
-def fit_model(tw: pd.DataFrame, priors: pd.DataFrame | None, team_keys: tuple) -> mm.TeamModel:
+def fit_model(tw: pd.DataFrame, priors: pd.DataFrame | None, team_keys: tuple,
+              scoring_sig: str = "") -> mm.TeamModel:
     return mm.fit_team_model(tw, teams=list(team_keys), priors=priors)
 
 
@@ -199,7 +307,7 @@ def plan_for(_model: mm.TeamModel, me: str, live: pd.DataFrame, values: pd.DataF
 def feed_for(_sims: list, live: pd.DataFrame, tw: pd.DataFrame, tx: pd.DataFrame, ap_summary: pd.DataFrame,
              values: pd.DataFrame | None, now_key: str, model_sig: str,
              cat_rates: pd.DataFrame | None = None, rosters: pd.DataFrame | None = None) -> dict:
-    return insights.league_feed(_sims, live, tw, tx, NAMES, ap_summary, META.scoring_type == "head",
+    return insights.league_feed(_sims, live, tw, tx, NAMES, ap_summary, SCORING.each_category_counts,
                                 values, pd.Timestamp(now_key), cat_rates, rosters)
 
 
@@ -233,8 +341,15 @@ def lineup_issues(c: dict, me: str):
     return hub.lineup_check(me, c["rosters"], playing_today())
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def all_play(tw: pd.DataFrame, scoring_sig: str) -> dict:
+    """Every team vs every team, every week. It was 70% of a cached page's CPU, so it's
+    cached per league (the scoreboard and scoring are the key)."""
+    return power.all_play(tw)
+
+
 def model_signature(tw: pd.DataFrame) -> str:
-    return f"{KEY}|{len(tw)}|{tw[['games', 'PTS']].sum().sum():.0f}"
+    return f"{KEY}|{SCORING.sig}|{len(tw)}|{tw[['games', 'PTS']].sum().sum():.0f}"
 
 
 def core():
@@ -246,8 +361,8 @@ def core():
     vals = valuation(players, (), META.num_teams, META.roster_size) if not players.empty else None
     ros = matched_rosters(KEY, vals.table) if vals is not None else pd.DataFrame()
     priors = mm.roster_priors(ros, players) if vals is not None else None
-    model = fit_model(tw, priors, tuple(teams["team_key"]))
-    ap = power.all_play(tw)
+    model = fit_model(tw, priors, tuple(teams["team_key"]), SCORING.sig)
+    ap = all_play(tw, SCORING.sig)
     return dict(tw=tw, teams=teams, names=names, players=players, vals=vals, rosters=ros,
                 model=model, ap=ap, sig=model_signature(tw))
 
@@ -298,19 +413,41 @@ def title_bar(title: str, sub: str = "", live: bool = False):
             team_picker("me_profile")
             st.caption("Saved in this page's link. In Safari tap Share, then **Add to Home Screen**, "
                        "and it opens straight to your team.")
+            st.divider()
+            st.html(f'<div class="lg-now">{e(META.name)}<span>{e(SCORING.describe())}</span></div>')
+            league_panel(KEY)
             st.caption("By Ryan Sandan · [rsandan.github.io](https://rsandan.github.io)")
+    _auth_message()
     if SOURCE.is_demo and FALLBACK_REASON and FALLBACK_REASON != "FANTASY_DEMO is set":
         st.caption(f"Yahoo is unreachable, so this is a demo league. ({FALLBACK_REASON})")
+    if SCORING.unsupported:
+        st.html(ui.note("Not modeled yet: " + ", ".join(dict.fromkeys(SCORING.unsupported))
+                        + ". Odds and rankings use your league's other categories."))
 
 
 def fmt_cat(value: float, cat_name: str) -> str:
-    if value != value:
-        return "–"
-    return f"{value:.3f}".lstrip("0") if BY_NAME[cat_name].kind == "pct" else f"{value:,.0f}"
+    return fmt_value(value, by_name()[cat_name])
+
+
+def short_name(name: str) -> str:
+    """'Season 4 of Love Island (NBA)' -> 'Love Island'. Other names pass through."""
+    import re as _re
+    n = _re.sub(r"^season\s+\d+\s+of\s+", "", str(name or ""), flags=_re.I)
+    n = _re.sub(r"\s*\((nba|demo)\)|\s*\[demo\]", "", n, flags=_re.I).strip()
+    return n or str(name or "Your league")
+
+
+def _scoring_words() -> str:
+    return "fantasy points" if SCORING.is_points else f"{len(SCORING.categories)} categories"
+
+
+def punt_options() -> list[str]:
+    """Punting only means something with several categories."""
+    return [] if SCORING.is_points or len(SCORING.categories) < 5 else cat_names()
 
 
 def banked_score(a: pd.Series, b: pd.Series) -> tuple[int, int, int]:
-    res = [compare(category_value(a, c), category_value(b, c), c) for c in CATEGORIES]
+    res = [compare(category_value(a, c), category_value(b, c), c) for c in cats()]
     return sum(r == 1 for r in res), sum(r == 0 for r in res), sum(r == 0.5 for r in res)
 
 
@@ -326,25 +463,29 @@ def oriented(sim, live: pd.DataFrame, me: str | None) -> dict:
 
 
 def scoreboard(o: dict, card: bool = True) -> str:
-    """Apple-Sports-style matchup card: win probability up top, nine categories below."""
+    """Apple-Sports-style matchup card: win probability up top, the league's categories below."""
     started = o["a"]["status"] != "preevent"
     na, nb = NAMES.get(o["ka"], o["ka"]), NAMES.get(o["kb"], o["kb"])
     w, l, t = banked_score(o["a"], o["b"]) if started else (0, 0, 0)
     a_fav = o["pa"] >= o["pb"]
+    wide = lambda p: " wide" if len(pct(p)) >= 4 else ""          # ">99%" / "<1%" fit their column
+    if SCORING.is_points:                                          # one category: the row below is the score
+        score_txt, cap_txt = "vs", "points"
+    else:
+        score_txt, cap_txt = (f"{w}–{l}–{t}", "categories") if started else ("vs", "not started")
     gl = lambda r: "?" if pd.isna(r["remaining_games"]) else f"{r['remaining_games']:.0f}"
     tie = f" · tie {pct(o['tie'])}" if o["tie"] >= 0.01 else ""
     html = [
         f'<div class="hero" style="{"" if card else "background:transparent;padding:0"}">'
         '<div class="top">'
-        f'<div>{logo(o["ka"], "lg")}<div class="tn">{e(na)}</div><div class="big {"" if a_fav else "dim"}">{pct(o["pa"])}</div></div>'
-        f'<div class="mid"><div class="score">{f"{w}–{l}–{t}" if started else "vs"}</div>'
-        f'<div class="cap">{"categories" if started else "not started"}</div></div>'
-        f'<div class="r">{logo(o["kb"], "lg")}<div class="tn">{e(nb)}</div><div class="big {"dim" if a_fav else ""}">{pct(o["pb"])}</div></div>'
+        f'<div>{logo(o["ka"], "lg")}<div class="tn">{e(na)}</div><div class="big{wide(o["pa"])} {"" if a_fav else "dim"}">{pct(o["pa"])}</div></div>'
+        f'<div class="mid"><div class="score">{score_txt}</div><div class="cap">{cap_txt}</div></div>'
+        f'<div class="r">{logo(o["kb"], "lg")}<div class="tn">{e(nb)}</div><div class="big{wide(o["pb"])} {"dim" if a_fav else ""}">{pct(o["pb"])}</div></div>'
         "</div>",
         f'<div class="bar"><span style="width:{(o["pa"] + o["tie"] / 2) * 100:.1f}%"></span><span class="b"></span></div>',
         f'<div class="meta">Chance to win the week · {gl(o["a"])} vs {gl(o["b"])} games left{tie}</div>',
     ]
-    for cat in CATEGORIES:
+    for cat in cats():
         va, vb = category_value(o["a"], cat), category_value(o["b"], cat)
         pa, pb = o["proj_a"][cat.name], o["proj_b"][cat.name]
         shown_a, shown_b = (va, vb) if started else (pa, pb)
@@ -443,7 +584,7 @@ def page_home():
     live = tw[tw["week"] == META.current_week]
     started = not live.empty and (live["status"] != "preevent").any()
     now = league_now()
-    title_bar("Love Island", f"Week {META.current_week} · {now:%a %b %-d}",
+    title_bar(short_name(META.name), f"Week {META.current_week} · {now:%a %b %-d}",
               live=started and live["status"].eq("midevent").any())
     if me is None:
         ui.section("Welcome")
@@ -479,13 +620,13 @@ def page_home():
         ui.section("Wire report")
         st.html(ui.team_report(feed["report"], NAMES, logo, me))
     ui.footnote(f"Updated {now:%-I:%M %p} ET. Odds come from 4,000 simulations of every matchup; "
-                "player rankings are per-game value in this league's nine categories.")
+                f"player rankings are per-game value in this league's {_scoring_words()}.")
 
 
 def _cat_summary(rates: pd.DataFrame, team_key: str) -> str:
     if team_key not in rates.index:
         return ""
-    r = rates.loc[team_key].reindex(CATEGORY_NAMES).dropna()
+    r = rates.loc[team_key].reindex(cat_names()).dropna()
     strong = r[r >= 0.6].sort_values(ascending=False).index[:3].tolist()
     weak = r[r <= 0.4].sort_values().index[:2].tolist()
     parts = []
@@ -501,6 +642,9 @@ def page_standings():
     tw, model, ap = c["tw"], c["model"], c["ap"]
     me = my_team()
     title_bar("Standings", e(META.name))
+    if not SCORING.weekly:
+        _yahoo_standings(me)
+        return
     summ = ap["summary"]
     if summ.empty:
         ui.footnote("Standings show up after the first week is complete.")
@@ -510,7 +654,7 @@ def page_standings():
                                 required=True, label_visibility="collapsed", key="stand_view",
                                 width="stretch")
     t = summ.set_index("team_key")
-    head = META.scoring_type == "head"
+    head = SCORING.each_category_counts
 
     if view == "Standings":
         rec, rp = ("cat_record", "cat_pct") if head else ("h2h_record", "h2h_pct")
@@ -539,6 +683,31 @@ def page_standings():
 
     else:
         _leaders(tw, me)
+
+
+@st.cache_data(ttl=900, show_spinner=False)
+def load_standings(key: str) -> pd.DataFrame:
+    return SOURCE.standings()
+
+
+def _yahoo_standings(me: str | None):
+    """Roto and season-points leagues: Yahoo's own table (no weekly matchups to model)."""
+    try:
+        st_df = load_standings(KEY)
+    except Exception:
+        st_df = pd.DataFrame()
+    if st_df.empty:
+        ui.footnote("Yahoo hasn't posted standings yet.")
+        return
+    st_df = st_df.sort_values("rank")
+    rows = [ui.row(e(NAMES.get(r.team_key, r.team_name)), "",
+                   f"{r.points:g}" if pd.notna(getattr(r, "points", float("nan"))) else "",
+                   "pts" if pd.notna(getattr(r, "points", float("nan"))) else "",
+                   lead=ui.rank(int(r.rank)) + logo(r.team_key), me=r.team_key == me)
+            for r in st_df.itertuples()]
+    ui.group(rows)
+    ui.footnote(f"{e(SCORING.describe())}. Rotisserie and season-points leagues get Yahoo's standings, "
+                "player rankings and trade analysis; weekly win odds need head-to-head matchups.")
 
 
 CHART_COLORS = ["#0a84ff", "#ff9f0a", "#30d158", "#bf5af2"]
@@ -580,8 +749,8 @@ def _leaders(tw: pd.DataFrame, me: str | None):
 
     if "lead_cat" not in st.session_state:
         st.session_state["lead_cat"] = "PTS"
-    cat = st.pills("Category", CATEGORY_NAMES, key="lead_cat", label_visibility="collapsed") or "PTS"
-    lower = "" if BY_NAME[cat].higher_is_better else " (fewest is best)"
+    cat = st.pills("Category", cat_names(), key="lead_cat", label_visibility="collapsed") or "PTS"
+    lower = "" if by_name()[cat].higher_is_better else " (fewest is best)"
     ui.section(f"{cat} leaders{lower}")
     avg = float(vals[cat].mean())
     share = leaders.bar_share(vals[cat], cat)
@@ -628,9 +797,9 @@ def _trend_chart(tw: pd.DataFrame, cat: str, me: str | None, rk: pd.DataFrame):
     sel = tr[tr["team_key"].isin(pick)].assign(team=lambda d: d["team_key"].map(NAMES))
     order = [NAMES[k] for k in pick]
     colors = CHART_COLORS[:len(order)]
-    pct_cat = BY_NAME[cat].kind == "pct"
+    pct_cat = by_name()[cat].kind == "pct"
     fmt = ".3f" if pct_cat else ",.0f"
-    y = alt.Y("value:Q", title=None, scale=alt.Scale(zero=False, reverse=not BY_NAME[cat].higher_is_better),
+    y = alt.Y("value:Q", title=None, scale=alt.Scale(zero=False, reverse=not by_name()[cat].higher_is_better),
               axis=alt.Axis(format=fmt, grid=True, gridOpacity=0.15, labelFontSize=11, tickCount=5))
     x = alt.X("week:O", title="Week", axis=alt.Axis(labelAngle=0, labelFontSize=11, titleFontSize=11))
     base_avg = alt.Chart(avg).mark_line(strokeDash=[4, 4], strokeWidth=1.5, color="#8e8e93").encode(
@@ -646,7 +815,7 @@ def _trend_chart(tw: pd.DataFrame, cat: str, me: str | None, rk: pd.DataFrame):
     chart = (base_avg + lines).properties(height=260).configure_view(strokeWidth=0).configure(
         background="transparent")
     st.altair_chart(chart, width="stretch", theme="streamlit")
-    flip = "" if BY_NAME[cat].higher_is_better else " The axis is flipped so up is always better."
+    flip = "" if by_name()[cat].higher_is_better else " The axis is flipped so up is always better."
     ui.footnote(f"Completed weeks only, so a half-finished week doesn't read as a slump. Dashed line is the "
                 f"league average.{flip} Add up to 4 teams to compare.")
 
@@ -664,7 +833,7 @@ def window_players(label: str) -> pd.DataFrame:
 
 
 def _top_cats(r: pd.Series, n: int = 2) -> str:
-    z = r[[c for c in Z_COLS if c in r.index]].astype(float)
+    z = r[[c for c in z_cols() if c in r.index]].astype(float)
     return " ".join(c.replace("z_", "") for c in z.sort_values(ascending=False).index[:n] if z[c] > 0.3)
 
 
@@ -684,9 +853,11 @@ def page_players():
 def _pickups(c: dict, me: str | None, photos: bool):
     tw, model = c["tw"], c["model"]
     live = tw[tw["week"] == META.current_week]
-    with st.popover("Ignore categories", icon=":material/tune:", type="tertiary"):
-        punts = st.pills("Ignore", CATEGORY_NAMES, selection_mode="multi", key="stream_punts",
-                         label_visibility="collapsed")
+    punts = []
+    if punt_options():
+        with st.popover("Ignore categories", icon=":material/tune:", type="tertiary"):
+            punts = st.pills("Ignore", punt_options(), selection_mode="multi", key="stream_punts",
+                             label_visibility="collapsed") or []
     weights = trade.context_weights(None, punts)
     week_end = TODAY
     ctx = []
@@ -742,11 +913,14 @@ def _rankings(photos: bool):
                               help="Blended leans on last season until a player has ~15 games in.")
             who = st.segmented_control("Show", ["All", "Free agents", "Rostered"], default="All",
                                        required=True, key="rank_who")
-            punts = st.pills("Punt", CATEGORY_NAMES, selection_mode="multi", key="rank_punts")
-            sort = st.segmented_control("Sort by", ["9-cat", "Points"], default="9-cat",
-                                        required=True, key="rank_sort",
-                                        help="Fantasy points use Yahoo's default points scoring. "
-                                             "This league is scored on the 9 categories.")
+            punts = (st.pills("Punt", punt_options(), selection_mode="multi", key="rank_punts") or []) \
+                if punt_options() else []
+            sort = "Value"
+            if not SCORING.is_points:
+                sort = st.segmented_control("Sort by", [SCORING.label, "Points"], default=SCORING.label,
+                                            required=True, key="rank_sort",
+                                            help="Fantasy points use Yahoo's default points scoring. "
+                                                 f"This league is scored on {_scoring_words()}.")
     players = window_players(window)
     if players.empty:
         ui.footnote("No stats for this window yet. Try Blended or Last season.")
@@ -756,7 +930,7 @@ def _rankings(photos: bool):
     ros = matched_rosters(KEY, table)
     owner = dict(zip(ros["PLAYER_ID"], ros["team_key"])) if not ros.empty else {}
     table = table.assign(owner=table["PLAYER_ID"].map(owner))
-    by_points = sort == "Points"
+    by_points = sort == "Points" or SCORING.is_points
     if by_points:
         table = table.assign(cat_rank=table["rank"], FPTS=fantasy_points(table))
         table = table.sort_values("FPTS", ascending=False).reset_index(drop=True)
@@ -776,7 +950,8 @@ def _rankings(photos: bool):
         if by_points:
             rows.append(ui.row(
                 e(p["PLAYER_NAME"]), e(f"{p.get('TEAM', '')} · {own}"),
-                f"{p['FPTS']:.1f}", e(f"9-cat #{int(p['cat_rank'])}"), lead=ui.rank(int(p["rank"]))))
+                f"{p['FPTS']:.1f}", e("FP/G" if SCORING.is_points else f"{SCORING.label} #{int(p['cat_rank'])}"),
+                lead=ui.rank(int(p["rank"]))))
         else:
             rows.append(ui.row(
                 e(p["PLAYER_NAME"]), e(f"{p.get('TEAM', '')} · {own}"),
@@ -787,15 +962,19 @@ def _rankings(photos: bool):
     else:
         ui.footnote("No players match.")
     more_button("rank_n", n, len(table), 25)
-    if by_points:
+    if SCORING.is_points:
+        w = SCORING.categories[0].weights
+        ui.footnote("Fantasy points per game with this league's scoring: "
+                    + ", ".join(f"{'TO' if c == 'TOV' else c.replace('FG3', '3P')} {v:g}" for c, v in w) + ".")
+    elif by_points:
         ui.footnote("Fantasy points per game with Yahoo's default points scoring: PTS 1, REB 1.2, AST 1.5, "
-                    "STL 3, BLK 3, TO −1. It ignores FG%, FT% and 3PT%, so it's a volume view, not how this "
-                    "league is scored. The 9-cat rank under each number shows the difference.")
+                    "STL 3, BLK 3, TO −1. It ignores shooting percentages, so it's a volume view, not how this "
+                    f"league is scored. The {SCORING.label} rank under each number shows the difference.")
     else:
         ui.footnote("Value per game, in z-scores against the players worth rostering in a "
                     f"{META.num_teams}-team league, weighted for head-to-head: categories that swing a lot week "
-                    "to week (3PT%, steals, FG%) count less than steady ones (points, rebounds, assists). "
-                    "Shooting percentages count shot volume.")
+                    "to week (like steals and shooting percentages) count less than steady ones (like points "
+                    "and rebounds). Shooting percentages count shot volume.")
 
 
 def _roster_options(team_key: str, ros: pd.DataFrame, vals: pd.DataFrame) -> dict:
@@ -875,9 +1054,10 @@ def page_trade():
     get = st.multiselect("You receive", list(their_opts), format_func=lambda i: their_opts.get(i, str(i)),
                          placeholder=f"Players from {NAMES[them]}", label_visibility="collapsed",
                          key=f"get_{them}", select_all=False, max_selections=5)
-    with st.expander("Punting any categories?"):
-        st.pills("Punts", CATEGORY_NAMES, selection_mode="multi", key="trade_punts",
-                 label_visibility="collapsed")
+    if punt_options():
+        with st.expander("Punting any categories?"):
+            st.pills("Punts", punt_options(), selection_mode="multi", key="trade_punts",
+                     label_visibility="collapsed")
     if not give and not get:
         return
 
@@ -913,7 +1093,7 @@ def page_trade():
         f'{e(fair_label)}</div></div>')
     ui.section("What changes for you, by category")
     chips = []
-    for cat in CATEGORY_NAMES:
+    for cat in cat_names():
         d = float(mine.table.at[cat, "delta"])
         off = mine.table.at[cat, "weight"] == 0
         chips.append(f'<div class="chip{" off" if off else ""}"><div class="k">{cat}</div>'
@@ -924,18 +1104,32 @@ def page_trade():
 
 
 # ======================================================================== navigation
-PAGES = [
-    st.Page(page_home, title="Home", icon=":material/home:", default=True),
-    st.Page(page_week, title="This Week", icon=":material/sports_basketball:", url_path="week"),
-    st.Page(page_standings, title="Standings", icon=":material/leaderboard:", url_path="standings"),
-    st.Page(page_players, title="Players", icon=":material/person_search:", url_path="players"),
-    st.Page(page_trade, title="Trade", icon=":material/swap_horiz:", url_path="trade"),
-]
+if SCORING.weekly:
+    PAGES = [
+        st.Page(page_home, title="Home", icon=":material/home:", default=True),
+        st.Page(page_week, title="This Week", icon=":material/sports_basketball:", url_path="week"),
+        st.Page(page_standings, title="Standings", icon=":material/leaderboard:", url_path="standings"),
+        st.Page(page_players, title="Players", icon=":material/person_search:", url_path="players"),
+        st.Page(page_trade, title="Trade", icon=":material/swap_horiz:", url_path="trade"),
+    ]
+else:   # roto / season points: no weekly matchups, so no Home game plan or This Week
+    PAGES = [
+        st.Page(page_players, title="Players", icon=":material/person_search:", url_path="players",
+                default=True),
+        st.Page(page_standings, title="Standings", icon=":material/leaderboard:", url_path="standings"),
+        st.Page(page_trade, title="Trade", icon=":material/swap_horiz:", url_path="trade"),
+    ]
 nav = st.navigation(PAGES, position="hidden")
 ui.inject()
 
+accounts.flush_cookie()
 me = my_team()
-qp = {"team": _short(me)} if me else None
+qp = {"team": _short(me)} if me else {}
+if CTX.kind == "user":
+    qp["league"] = KEY
+elif CTX.kind == "demo":
+    qp["league"] = accounts.DEMO_KEY
+qp = qp or None
 if me:
     st.query_params["team"] = _short(me)
 with st.container(horizontal=True, key="tabbar"):

@@ -2,8 +2,10 @@
 ![Header Image](./cover.jpg)
 [Click here to check it out](https://nba-fantasy-dashboard.onrender.com/)
 
-A phone-first companion app for my friends' Yahoo Fantasy Basketball league, **Season 4 of
-Love Island (NBA)**: H2H, 8 teams, 9 categories (FG%, FT%, 3PT%, PTS, REB, AST, STL, BLK, TO).
+A phone-first dashboard for **any Yahoo Fantasy Basketball league**. It started as the
+companion app for my friends' league, **Season 4 of Love Island (NBA)** (H2H, 8 teams, 9
+categories with 3PT%), which still opens without sign-in. Anyone else taps **Sign in with Yahoo**
+and picks one of their own leagues, in any scoring format.
 
 It answers the questions we actually ask each other in the group chat: *Am I winning this
 week? What should I do about it? Who should I trade with? Who's sleeping on the wire?* Every
@@ -11,6 +13,45 @@ number comes from the same simulation model, so a headline never contradicts the
 
 > Hosted on Render's free tier. A keep-alive ping keeps it awake, but if it was asleep the first
 > load takes up to a minute.
+
+---
+
+## Any Yahoo league
+
+| Format | What works |
+|---|---|
+| **H2H categories**, any mix (9-cat with 3PT% or 3PTM, 8-cat, 11-cat with A/T, FGM, FTM ...) | Everything |
+| **H2H most categories** (one win per week) | Everything; standings count matchups, not categories |
+| **H2H points** (the league's own modifiers) | Everything; the matchup is one "FPTS" category |
+| **Rotisserie / season points** | Players, trades and Yahoo's standings (no weekly matchups to simulate) |
+
+Categories we can't model yet (double-doubles, triple-doubles, offensive/defensive rebounds,
+fouls) are named on screen, and the odds use the league's other categories instead of guessing.
+
+**How it works.** Each league's scoring is read from its Yahoo settings (`stat_categories`,
+`stat_modifiers`, `scoring_type`) into a `Scoring` (`fantasy/categories.py`). Every model reads
+the *active* scoring from a per-session `ContextVar`, so two people in different leagues on the
+site at the same moment never see each other's categories. The matchup model builds its
+components from what each league actually reports: a 3PTM league sends made threes but no
+attempts, so it models 3PTM directly instead of attempts × percentage. Caches are keyed by
+league (plus a scoring fingerprint where the input is shared, like the NBA player table), so
+members of the same league share one copy of the Yahoo data.
+
+**Sign in with Yahoo** (`fantasy/auth.py`, `fantasy/accounts.py`)
+- OAuth 2.0 authorization-code flow. The `state` is HMAC-signed with a 10-minute expiry, so
+  it's checked without server storage and a forged or replayed callback is rejected.
+- "Stay signed in": the refresh token is encrypted (Fernet) into a cookie only this server can
+  read. Tokens never appear in URLs, logs or error messages, and the sign-in code is scrubbed
+  from the address bar immediately.
+- You can only open leagues your Yahoo account is in. A shared link to someone else's league
+  falls back to your own (or the featured league).
+- Read-only: the app never writes to Yahoo.
+
+**Tested** with nine fake leagues in Yahoo's JSON shapes (`fantasy/fake_yahoo.py`): 3PT% and
+3PTM 9-cat, 8-cat, 11-cat one-win, 10-cat with double-doubles, H2H points, roto, 6 and 16 teams,
+and preseason. Every page renders in every league, and `scripts/load_test.py` opens 18 browsers
+at once across all nine. Last run: 36 sessions, 0 problems (no category leaking between leagues,
+no errors), peak server memory about 300 MB.
 
 ---
 
@@ -176,7 +217,8 @@ To rebuild by hand: **Actions → refresh-nba-data → Run workflow**, or locall
 ```bash
 pip install -r requirements-dev.txt
 FANTASY_DEMO=1 streamlit run app.py        # no credentials needed
-pytest -q                                  # 76 tests, ~25s
+pytest -q                                  # 147 tests, ~2 min
+python scripts/load_test.py                # 18 browsers, 9 fake leagues, all at once
 ```
 
 ### Live mode (Yahoo)
@@ -195,6 +237,19 @@ Optional: `YAHOO_LEAGUE_ID` (the number in your league URL) pins the league and 
 season; `YAHOO_LEAGUE_KEY` (`478.l.12345`) pins an exact key. If Yahoo can't be reached, the site
 falls back to the demo league and says why.
 
+### Sign in with Yahoo (other leagues)
+
+Use a **second** Yahoo app for this, so the featured league's token is never affected:
+
+1. Create an app at developer.yahoo.com with **Fantasy Sports: Read** permission and the
+   redirect URI set to the site's URL (`https://nba-fantasy-dashboard.onrender.com/`).
+2. In Render, set `YAHOO_CLIENT_ID`, `YAHOO_CLIENT_SECRET`, `YAHOO_REDIRECT_URI` (the same URL)
+   and `APP_SECRET` (any long random string; `render.yaml` generates one). Changing
+   `APP_SECRET` signs everyone out.
+3. `FEATURED_LEAGUE=0` makes every visitor start at the sign-in page instead of Love Island.
+
+Until those are set, the site works exactly as before and the sign-in button stays hidden.
+
 **Render:** `render.yaml` starts `streamlit run app.py --server.port $PORT --server.address 0.0.0.0`
 and auto-deploys on pushes to `main`.
 
@@ -212,10 +267,13 @@ and auto-deploys on pushes to `main`.
 ## Project layout
 
 ```
-app.py                     Streamlit app: 5 tabs, caching layer, "my team" state, loading screen
+app.py                     Streamlit app: tabs, landing page, caching layer, "my team" state
 fantasy/
-  categories.py            9-cat definitions (3PT% from makes/attempts), tie-aware comparison
-  yahoo_client.py          OAuth, league discovery, pure JSON parsers (scoreboard, transactions)
+  categories.py            per-league scoring (any categories or points) + active-scoring ContextVar
+  auth.py                  Sign in with Yahoo: OAuth, signed state, encrypted remember-me cookie
+  accounts.py              which league this session sees: featured, signed-in, or demo
+  yahoo_client.py          league discovery, settings -> scoring, pure JSON parsers
+  fake_yahoo.py            test-only: whole leagues in every format, in Yahoo's JSON shapes
   data_source.py           live vs. demo switch; reads NBA data from snapshots
   snapshot.py              snapshot reader + Basketball-Reference / ESPN / NBA CDN parsers
   nba_data.py              per-game stats, schedule, season blending, name matching
@@ -231,9 +289,11 @@ fantasy/
   splash.py                animated loading screen (3 variants)
   demo.py                  synthetic league generator (tests + demo mode)
 scripts/refresh_data.py    builds the NBA snapshots on the data branch
+scripts/load_test.py       many browsers x many leagues against a local server (fake_server_app.py)
 .github/workflows/         tests, 3-hourly data refresh, keep-alive ping
-tests/                     76 tests: parsers, model skill and calibration, valuation, fair trades,
-                           lineup checks, leaderboards, storylines, every tab renders
+tests/                     147 tests: parsers, model skill and calibration, valuation, fair trades,
+                           every scoring format, sign-in security, thread isolation, every tab
+                           in every league
 ```
 
 ---
@@ -241,6 +301,10 @@ tests/                     76 tests: parsers, model skill and calibration, valua
 ## Changelog
 
 ### Season 4 (2026–27)
+- **Any Yahoo league:** Sign in with Yahoo, a league picker, and per-league scoring (any
+  category mix, one-win weeks, points, roto). Love Island still opens without sign-in.
+- **Speed:** completed weeks, rosters and free agents load in parallel; all-play standings are
+  cached (it was 70% of a cached page's CPU).
 - **Yahoo access:** moved to a new Fantasy-approved Yahoo app; documented the token flow and the
   wrong-account pitfall.
 - **Fast loads:** NBA stats moved off the request path into 3-hourly snapshots; "Loading player
@@ -262,6 +326,11 @@ tests/                     76 tests: parsers, model skill and calibration, valua
 
 ## Known limitations
 
+- Double-doubles, triple-doubles, offensive/defensive rebounds and fouls aren't modeled yet;
+  leagues that score them see a note and odds from their other categories.
+- Roto and season-points leagues get players, trades and standings, but no weekly odds.
+- One server process: roughly 2–3 page views per second per CPU. Plenty for leagues of friends;
+  a big launch would need more instances.
 - Per-game rates assume Yahoo's completed games count started player-games; daily lineup choices
   aren't modeled beyond that.
 - Trade values and pickups use per-game production; minutes or role changes show up only as the

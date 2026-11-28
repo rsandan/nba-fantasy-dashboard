@@ -52,6 +52,11 @@ class Source:
             return tw[tw["week"] == week].reset_index(drop=True)
         return self.live.scoreboard(week)
 
+    def standings(self) -> pd.DataFrame:
+        if self.is_demo:
+            return pd.DataFrame(columns=["team_key", "team_name", "rank", "wins", "losses", "ties", "points"])
+        return self.live.standings()
+
     def transactions(self) -> pd.DataFrame:
         return self.demo_bundle["transactions"] if self.is_demo else self.live.transactions()
 

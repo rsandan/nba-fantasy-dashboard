@@ -109,11 +109,13 @@ def _round_robin(teams: list[str], weeks: int) -> dict[int, list[tuple[str, str]
 
 
 def make_league(seed: int = 42, n_teams: int = 10, completed_weeks: int = 9, total_weeks: int = 20,
-                current_progress: float = 0.55):
+                current_progress: float = 0.55, team_names: list[str] | None = None):
     """Return a dict with everything the app needs, in the same schemas as the live path."""
     rng = np.random.default_rng(seed)
     keys = _team_keys(n_teams)
-    names = dict(zip(keys, TEAM_NAMES[:n_teams]))
+    pool = list(team_names or TEAM_NAMES)
+    pool += [f"Team {i}" for i in range(len(pool) + 1, n_teams + 1)]
+    names = dict(zip(keys, pool[:n_teams]))
     # Rosters first, then derive each team's true strength from its roster so every page
     # (roster priors, valuations, results) tells one consistent story.
     players_cur, players_prior = make_players(rng)
@@ -146,7 +148,7 @@ def make_league(seed: int = 42, n_teams: int = 10, completed_weeks: int = 9, tot
                                  **{"FG%": totals["FGM"] / totals["FGA"] if totals["FGA"] else np.nan,
                                     "FT%": totals["FTM"] / totals["FTA"] if totals["FTA"] else np.nan,
                                     "3PT%": totals["FG3M"] / totals["FG3A"] if totals["FG3A"] else np.nan}))
-    team_weeks = pd.DataFrame(rows)[TEAM_WEEK_COLUMNS]
+    team_weeks = pd.DataFrame(rows).reindex(columns=TEAM_WEEK_COLUMNS)
 
     current_week = completed_weeks + 1
     meta = LeagueMeta(league_key=LEAGUE_PREFIX, name="Season 3 of Love Island (NBA) [demo]",
@@ -269,7 +271,9 @@ def make_transactions(rng, keys, names, players, season_start, weeks):
             tid += 1
     # A couple of trades late in the window so the trade storylines have something to say.
     stars = players.sort_values("MIN", ascending=False).iloc[20:80].reset_index(drop=True)
-    for i, (ta, tb) in enumerate(((keys[0], keys[3]), (keys[5], keys[8]))):
+    n = len(keys)
+    pairs = [(keys[0], keys[3 % n]), (keys[5 % n], keys[8 % n])]
+    for i, (ta, tb) in enumerate(p for p in pairs if p[0] != p[1]):
         ts = pd.Timestamp(datetime.combine(season_start + timedelta(days=weeks * 7 - 4 - 3 * i),
                                            datetime.min.time()), tz=tz) + pd.Timedelta(hours=21)
         give, get = stars.iloc[2 * i], stars.iloc[2 * i + 1]

@@ -20,12 +20,12 @@ from itertools import combinations
 import numpy as np
 import pandas as pd
 
-from .categories import BY_NAME, CATEGORIES, CATEGORY_NAMES, category_value, compare
+from .categories import by_name, cats, cat_names, category_value, compare, per_week_value
 from .matchup_model import TeamModel, perturbed, simulate_matchup
 
 
 def _week_values(week_df: pd.DataFrame) -> pd.DataFrame:
-    vals = {c.name: week_df.apply(lambda r, c=c: category_value(r, c), axis=1) for c in CATEGORIES}
+    vals = {c.name: week_df.apply(lambda r, c=c: category_value(r, c), axis=1) for c in cats()}
     return pd.DataFrame(vals).set_axis(list(week_df["team_key"]), axis=0)
 
 
@@ -46,25 +46,22 @@ def season_ranks(team_weeks: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     tot = done.groupby("team_key")[cols].sum()
     weeks = done.groupby("team_key")["week"].nunique()
     vals = {}
-    for c in CATEGORIES:
-        if c.kind == "pct":
-            if c.makes not in tot or c.attempts not in tot:
-                continue
-            vals[c.name] = tot[c.makes] / tot[c.attempts].where(tot[c.attempts] > 0)
-        elif c.stat in tot:
-            vals[c.name] = tot[c.stat] / weeks
+    for c in cats():
+        v = per_week_value(tot, c, weeks)
+        if v.notna().any():
+            vals[c.name] = v
     values = pd.DataFrame(vals)
     shown = values.copy()  # Yahoo settles percentages at 3 decimals: .8021 and .8017 are a tie
     for n in shown:
-        if BY_NAME[n].kind == "pct":
-            shown[n] = shown[n].round(BY_NAME[n].decimals)
+        if by_name()[n].kind == "pct":
+            shown[n] = shown[n].round(by_name()[n].decimals)
     ranks = pd.DataFrame({
-        n: shown[n].rank(ascending=not BY_NAME[n].higher_is_better, method="min") for n in values})
+        n: shown[n].rank(ascending=not by_name()[n].higher_is_better, method="min") for n in values})
     return values, ranks
 
 
 def head_to_head(v: pd.DataFrame, a: str, b: str) -> dict[str, float]:
-    return {c.name: compare(v.at[a, c.name], v.at[b, c.name], c) for c in CATEGORIES}
+    return {c.name: compare(v.at[a, c.name], v.at[b, c.name], c) for c in cats()}
 
 
 def all_play(team_weeks: pd.DataFrame) -> dict[str, pd.DataFrame]:
@@ -84,7 +81,7 @@ def all_play(team_weeks: pd.DataFrame) -> dict[str, pd.DataFrame]:
         for t in teams:
             s = summ.setdefault(t, dict(ap_w=0, ap_l=0, ap_t=0, ap_cw=0.0, ap_cn=0,
                                         w=0, l=0, t=0, cw=0.0, cl=0.0, ct=0.0, weeks=0))
-            ch = cat_hits.setdefault(t, {c: [] for c in CATEGORY_NAMES})
+            ch = cat_hits.setdefault(t, {c: [] for c in cat_names()})
             wk_w = wk_n = 0.0
             for o in teams:
                 if o == t:
@@ -133,7 +130,7 @@ def all_play(team_weeks: pd.DataFrame) -> dict[str, pd.DataFrame]:
         summary["luck_matchup"] = summary["h2h_pct"] - summary["ap_pct"]
         summary["luck_category"] = summary["cat_pct"] - summary["ap_cat_pct"]
     cat_rates = pd.DataFrame({t: {c: np.mean(v) for c, v in d.items()} for t, d in cat_hits.items()}).T
-    return {"summary": summary, "category_rates": cat_rates.reindex(columns=CATEGORY_NAMES),
+    return {"summary": summary, "category_rates": cat_rates.reindex(columns=cat_names()),
             "weekly": pd.DataFrame(weekly)}
 
 

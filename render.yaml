@@ -17,6 +17,21 @@ services:
       # Optional: pin the league. Otherwise the newest NBA league on the account is used.
       - key: YAHOO_LEAGUE_ID
         sync: false
+      # Sign in with Yahoo (any league). Use a *second* Yahoo app whose redirect URI is
+      # this site's URL, so the featured league's token above is never touched.
+      - key: YAHOO_CLIENT_ID
+        sync: false
+      - key: YAHOO_CLIENT_SECRET
+        sync: false
+      - key: YAHOO_REDIRECT_URI
+        value: https://nba-fantasy-dashboard.onrender.com/
+      # Signs sign-in links and encrypts the remember-me cookie. Keep it stable:
+      # changing it signs everyone out.
+      - key: APP_SECRET
+        generateValue: true
+      # 1 = Love Island opens without sign-in (default). 0 = everyone starts at sign-in.
+      - key: FEATURED_LEAGUE
+        value: "1"
       # Optional: set to 1 to serve the synthetic demo league (no Yahoo calls).
       - key: FANTASY_DEMO
         value: "0"

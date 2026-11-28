@@ -30,7 +30,7 @@ import numpy as np
 import pandas as pd
 
 from . import matchup_model as mm
-from .categories import BY_NAME, CATEGORIES, CATEGORY_NAMES, category_value, compare
+from .categories import by_name, cats, cat_names, category_value, compare, fmt_value
 from .nba_data import normalize_name
 from .trade import QUESTIONABLE, context_weights, is_unavailable, streaming_board
 
@@ -39,7 +39,10 @@ INJURED = {"INJ", "O", "OUT", "IL", "IL+", "SUSP", "NA", "NR"}
 BENCH_SLOTS = {"BN", "IL", "IL+", "NA"}
 CAT_PLAYERS = {"FG%": "efficient bigs", "FT%": "good free-throw shooters", "3PT%": "efficient shooters",
                "PTS": "scorers", "REB": "bigs", "AST": "playmakers", "STL": "wings and guards who gamble",
-               "BLK": "rim protectors", "TO": "low-usage role players"}
+               "BLK": "rim protectors", "TO": "low-usage role players", "3PTM": "volume three-point shooters",
+               "FGM": "high-volume scorers", "FTM": "players who get to the line", "A/T": "careful playmakers",
+               "FGA": "high-volume scorers", "FTA": "players who get to the line", "3PTA": "volume shooters",
+               "FPTS": "players with the most games left"}
 
 
 # ============================================================================ helpers
@@ -51,11 +54,11 @@ def _pick(options: list[str], key: str) -> str:
 def _fmt(cat: str, v: float) -> str:
     if v != v:
         return "–"
-    return f"{v:.3f}".lstrip("0") if BY_NAME[cat].kind == "pct" else f"{v:,.0f}"
+    return fmt_value(v, by_name()[cat])
 
 
 def _banked(a: pd.Series, b: pd.Series) -> tuple[int, int, int]:
-    res = [compare(category_value(a, c), category_value(b, c), c) for c in CATEGORIES]
+    res = [compare(category_value(a, c), category_value(b, c), c) for c in cats()]
     return sum(r == 1 for r in res), sum(r == 0 for r in res), sum(r == 0.5 for r in res)
 
 
@@ -72,7 +75,7 @@ def player_index(values: pd.DataFrame) -> dict:
     """name_key -> (rank, value, best category, NBA id) for linking Yahoo names to values."""
     if values is None or values.empty:
         return {}
-    z = [f"z_{c}" for c in CATEGORY_NAMES]
+    z = [f"z_{c}" for c in cat_names()]
     best = values[z].idxmax(axis=1).str.replace("z_", "", regex=False)
     return {k: (int(r), float(v), b, pid) for k, r, v, b, pid in
             zip(values["name_key"], values["rank"], values["value"], best, values["PLAYER_ID"])}
@@ -111,8 +114,8 @@ class GamePlan:
 
 def _player_weighted(df: pd.DataFrame, weights: pd.Series, repl: pd.Series,
                      factors: pd.Series | None = None) -> pd.Series:
-    f = factors if factors is not None else pd.Series(1.0, index=CATEGORY_NAMES)
-    return sum((df[f"z_{c}"] - repl.get(c, 0.0)) * weights.get(c, 1.0) * f.get(c, 1.0) for c in CATEGORY_NAMES)
+    f = factors if factors is not None else pd.Series(1.0, index=cat_names())
+    return sum((df[f"z_{c}"] - repl.get(c, 0.0)) * weights.get(c, 1.0) * f.get(c, 1.0) for c in cat_names())
 
 
 def game_plan(me: str, live: pd.DataFrame, model: mm.TeamModel, values: pd.DataFrame | None,
@@ -151,7 +154,7 @@ def game_plan(me: str, live: pd.DataFrame, model: mm.TeamModel, values: pd.DataF
         board = board[board["games_left"] > 0].head(6)
         mine = rosters[(rosters["team_key"] == me) & rosters["PLAYER_ID"].notna()] if not rosters.empty else rosters
         if not board.empty and not mine.empty:
-            m = mine.merge(values[["PLAYER_ID", "TEAM", "rank", *ADDITIVE, *[f"z_{c}" for c in CATEGORY_NAMES]]],
+            m = mine.merge(values[["PLAYER_ID", "TEAM", "rank", *ADDITIVE, *[f"z_{c}" for c in cat_names()]]],
                            on="PLAYER_ID", how="inner", suffixes=("_y", ""))
             if "selected_position" in m:
                 m = m[~m["selected_position"].isin({"IL", "IL+"})]
@@ -181,7 +184,7 @@ def game_plan(me: str, live: pd.DataFrame, model: mm.TeamModel, values: pd.DataF
                             best = (gain, a, d, s)
                 if best and best[0] >= 0.01:
                     gain, a, d, s = best
-                    helps = [c for c in CATEGORY_NAMES if s.cat_prob[c] - p[c] >= 0.04]
+                    helps = [c for c in cat_names() if s.cat_prob[c] - p[c] >= 0.04]
                     helps_txt = f", and it moves {', '.join(helps[:3])}" if helps else ""
                     d_hurt = is_unavailable(d.get("status"))
                     d_txt = (f"{d['name']} is listed as out" if d_hurt
@@ -196,34 +199,37 @@ def game_plan(me: str, live: pd.DataFrame, model: mm.TeamModel, values: pd.DataF
 
     # ---- 2. chase the most winnable category you're behind in
     proj_me, proj_op = base.proj_a, base.proj_b
-    behind = [c for c in CATEGORY_NAMES if 0.12 <= p[c] < 0.5]
+    behind = [c for c in cat_names() if 0.12 <= p[c] < 0.5]
     if behind:
         c = max(behind, key=lambda k: p[k])
-        cat = BY_NAME[c]
+        cat = by_name()[c]
         proj = f"You're projected at {_fmt(c, proj_me[c])} to their {_fmt(c, proj_op[c])}."
-        if cat.kind == "pct":
+        if cat.is_shooting:
             title = f"Swing {c}"
-            detail = f"{proj} Lean on {CAT_PLAYERS[c]} and sit low-percentage volume shooters."
+            detail = f"{proj} Lean on {CAT_PLAYERS.get(c, 'good shooters')} and sit low-percentage volume shooters."
+        elif cat.kind == "pct":
+            title = f"Swing {c}"
+            detail = f"{proj} Lean on {CAT_PLAYERS.get(c, 'steady players')}."
         elif not cat.higher_is_better:
             gap = proj_me[c] - proj_op[c]
             per = f" That's {gap / rem_me:.1f} fewer per game over your {int(rem_me)} games." \
                 if rem_me and rem_me > 0 and gap > 0 else ""
             title = "Cut the turnovers"
-            detail = f"{proj}{per} Favor {CAT_PLAYERS[c]} over high-usage creators."
+            detail = f"{proj}{per} Favor {CAT_PLAYERS.get(c, 'low-usage role players')} over high-usage creators."
         else:
             gap = proj_op[c] - proj_me[c]
             per = f" That's about {gap / rem_me:.1f} more per game over your {int(rem_me)} games." \
                 if rem_me and rem_me > 0 and gap > 0 else ""
-            title = f"Go get {c}"
-            detail = f"{proj}{per} Stream {CAT_PLAYERS[c]}."
+            title = "Get more games in" if cat.kind == "points" else f"Go get {c}"
+            detail = f"{proj}{per} Stream {CAT_PLAYERS.get(c, 'the best available players')}."
         actions.append(Action("chase", title, detail, f"{p[c]:.0%} now", 3 + 8 * p[c]))
 
     # ---- 3. protect a lead that's still in play
-    ahead = [c for c in CATEGORY_NAMES if 0.5 <= p[c] <= 0.8]
+    ahead = [c for c in cat_names() if 0.5 <= p[c] <= 0.8]
     if ahead:
         c = min(ahead, key=lambda k: p[k])
-        tip = ("Don't stream low-percentage shooters." if BY_NAME[c].kind == "pct"
-               else f"Keep your {CAT_PLAYERS[c]} in the lineup every day.")
+        tip = ("Don't stream low-percentage shooters." if by_name()[c].is_shooting
+               else f"Keep your {CAT_PLAYERS.get(c, 'best players')} in the lineup every day.")
         actions.append(Action("protect", f"Protect {c}",
                               f"You lead it {p[c]:.0%} of the time, projected {_fmt(c, proj_me[c])} to "
                               f"{_fmt(c, proj_op[c])}. {tip}", f"{p[c]:.0%}", 3 + 6 * (0.8 - p[c])))
@@ -244,8 +250,8 @@ def game_plan(me: str, live: pd.DataFrame, model: mm.TeamModel, values: pd.DataF
                                   "lineup daily so none of them sit on the bench.", f"+{int(diff)} games", 3 + diff / 2))
 
     # ---- 6. stop chasing lost causes / don't waste moves on locks
-    lost = [c for c in CATEGORY_NAMES if p[c] < 0.08]
-    locked = [c for c in CATEGORY_NAMES if p[c] > 0.95]
+    lost = [c for c in cat_names() if p[c] < 0.08]
+    locked = [c for c in cat_names() if p[c] > 0.95]
     if lost:
         actions.append(Action("concede", f"Let {' and '.join(lost[:2])} go",
                               f"{'They are' if len(lost) > 1 else 'It is'} under 10% to flip. Point your adds at "
@@ -302,9 +308,9 @@ def matchup_stories(sims: list, live: pd.DataFrame, names: dict, ranks: dict,
         fp = max(pa, pb)
         nf, nd = names.get(fav, fav), names.get(dog, dog)
         cat_fav = s.cat_prob if fav == s.team_a else 1 - s.cat_prob
-        swing = sorted(CATEGORY_NAMES, key=lambda c: abs(cat_fav[c] - 0.5))[:2]
+        swing = sorted(cat_names(), key=lambda c: abs(cat_fav[c] - 0.5))[:2]
         swing = [c for c in swing if 0.25 <= cat_fav[c] <= 0.75]
-        dog_best = min(CATEGORY_NAMES, key=lambda c: cat_fav[c])
+        dog_best = min(cat_names(), key=lambda c: cat_fav[c])
         rf, rd = ranks.get(fav), ranks.get(dog)
         w, l, t = (_banked(a, b) if fav == s.team_a else _banked(b, a)) if started else (0, 0, 0)
         ra, rb = _rem(a), _rem(b)
@@ -567,8 +573,9 @@ def _streaks(tw: pd.DataFrame) -> dict:
 
 
 def _fmt_cat(cat: str, v: float) -> str:
-    if cat.endswith("%"):
-        return f"{v:.3f}".lstrip("0")
+    c = by_name().get(cat)
+    if c is not None and c.kind == "pct":
+        return fmt_value(v, c)
     return f"{v:.0f}/wk"
 
 
